@@ -42,9 +42,31 @@ export async function initStore(connectionString) {
     max: 4,
     idleTimeoutMillis: 30000,
     ssl: useSsl ? { rejectUnauthorized: false } : false,
+    // Supabase's direct host is IPv6-only; Render free instances have no IPv6
+    // egress (ENETUNREACH). Force IPv4 so the pool never dials a v6 address.
+    family: 4,
   });
-  await pool.query(SCHEMA);
+
+  await initWithRetry(pool);
   return pool;
+}
+
+// The schema migration is the first thing that touches the network. Transient
+// DNS/routing failures at boot shouldn't kill the process — Render would keep
+// flapping the service. Retry a few times before giving up.
+async function initWithRetry(pool, attempts = 5) {
+  let lastErr;
+  for (let i = 1; i <= attempts; i++) {
+    try {
+      await pool.query(SCHEMA);
+      return;
+    } catch (err) {
+      lastErr = err;
+      console.log(`store init attempt ${i}/${attempts} failed: ${err.message}`);
+      if (i < attempts) await new Promise((r) => setTimeout(r, 3000 * i));
+    }
+  }
+  throw lastErr;
 }
 
 export function getPool() {

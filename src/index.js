@@ -19,37 +19,11 @@ async function requireLogin(chatId) {
   return true;
 }
 
+// main() is retained for reference; mainWithRetry below is what actually boots.
 async function main() {
-  // 1. persistence (Supabase / Neon Postgres)
   await initStore(process.env.DATABASE_URL);
-
-  // 2. telegram
-  if (process.env.TELEGRAM_BOT_TOKEN) {
-    setTelegramToken(process.env.TELEGRAM_BOT_TOKEN);
-    registerCommands();
-    startPolling();
-    console.log("telegram bot started");
-  } else {
-    console.warn("TELEGRAM_BOT_TOKEN missing — notifications disabled until set");
-  }
-
-  // 3. web server (Render port + login page + health)
   const app = createWebApp();
   app.listen(PORT, () => console.log(`listening on :${PORT}`));
-
-  // 4. resume watching if an account is already linked
-  const creds = await getCredentials();
-  if (creds) {
-    startWatcher();
-    console.log("account linked — watcher resumed");
-  } else {
-    console.log("no account yet — waiting for login at /");
-  }
-
-  // 5. friendly reminder if the bot is half-configured
-  if (!process.env.TELEGRAM_CHAT_ID) {
-    console.warn("TELEGRAM_CHAT_ID missing — send /start to the bot and set it as env var");
-  }
 }
 
 function registerCommands() {
@@ -208,7 +182,54 @@ function isWithin24h(iso) {
   return d > Date.now() && d < Date.now() + 24 * 60 * 60 * 1000;
 }
 
-main().catch((err) => {
+async function mainWithRetry() {
+  // Supabase free tier can take a few seconds to wake from auto-pause, and
+  // fresh Render instances may hit transient routing errors. Boot the web
+  // server first so /health responds, then retry the DB-backed steps.
+  let storeOk = false;
+  for (let i = 1; i <= 5 && !storeOk; i++) {
+    try {
+      await initStore(process.env.DATABASE_URL);
+      storeOk = true;
+    } catch (err) {
+      console.error(`store init failed (attempt ${i}/5):`, err.message);
+      if (i === 5) {
+        console.error("giving up on the store; running in degraded mode");
+      } else {
+        await new Promise((r) => setTimeout(r, 5000 * i));
+      }
+    }
+  }
+
+  if (storeOk) {
+    if (process.env.TELEGRAM_BOT_TOKEN) {
+      setTelegramToken(process.env.TELEGRAM_BOT_TOKEN);
+      registerCommands();
+      startPolling();
+      console.log("telegram bot started");
+    } else {
+      console.warn("TELEGRAM_BOT_TOKEN missing — notifications disabled until set");
+    }
+
+    const creds = await getCredentials();
+    if (creds) {
+      startWatcher();
+      console.log("account linked — watcher resumed");
+    } else {
+      console.log("no account yet — waiting for login at /");
+    }
+  }
+
+  // Always start the web server so Render's health check has something to hit.
+  const app = createWebApp();
+  app.listen(PORT, () => console.log(`listening on :${PORT}`));
+
+  if (!process.env.TELEGRAM_CHAT_ID) {
+    console.warn("TELEGRAM_CHAT_ID missing — send /start to the bot and set it as env var");
+  }
+}
+
+mainWithRetry().catch((err) => {
   console.error("fatal startup error:", err);
   process.exit(1);
 });
