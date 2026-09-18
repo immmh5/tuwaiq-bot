@@ -38,7 +38,13 @@
 | `DATABASE_URL` | connection string من Supabase/Neon |
 | `TELEGRAM_BOT_TOKEN` | توكنك من @BotFather |
 | `TELEGRAM_CHAT_ID` | معرّف شاتك (رقمي) |
+| `CONTROL_SECRET` | سر عشوائي طويل (للتحكم عن بعد عبر MCP) |
 | `CHECK_INTERVAL_MIN` | `10` (افتراضي، ٥–١٢٠) |
+
+ولّد سر قوي بأمر:
+```bash
+node -e "console.log(require('crypto').randomBytes(24).toString('hex'))"
+```
 
 ### 3. منع النوم (لأن الباقة المجانية تنام)
 Render free ينام بعد ١٥ دقيقة خمول. ثبّت pinger مجاني على [UptimeRobot](https://uptimerobot.com/) أو [cron-job.org](https://cron-job.org/):
