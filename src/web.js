@@ -17,6 +17,22 @@ import { login, decodeToken } from "./auth.js";
 import { runCheckOnce, getWatcherState, startWatcher, stopWatcher } from "./watcher.js";
 import { sendMessage } from "./telegram.js";
 
+// Lightweight Telegram reachability check: tries to reach the chat without
+// posting anything visible (getChat works for private chats the bot knows).
+async function probeTelegram(chatId) {
+  try {
+    const token = process.env.TELEGRAM_BOT_TOKEN;
+    if (!token) return false;
+    const url = `https://api.telegram.org/bot${token}/getChat?chat_id=${encodeURIComponent(chatId)}`;
+    const r = await fetch(url, { signal: AbortSignal.timeout(8000) });
+    if (!r.ok) return false;
+    const d = await r.json();
+    return d.ok === true;
+  } catch {
+    return false;
+  }
+}
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 export function createWebApp() {
@@ -183,14 +199,32 @@ export function createWebApp() {
     res.json({ ok: true, message: "seen log cleared" });
   });
 
+  // --- telegram chat id discovery ---
+  // The owner sends /start to the bot; this endpoint shows the chat id that
+  // last messaged it so it can be pasted into TELEGRAM_CHAT_ID on Render.
+  app.get("/api/whoami", async (_req, res) => {
+    const chatId = await getKv("last_chat_id", null);
+    res.json({ chatId, configured: process.env.TELEGRAM_CHAT_ID || null });
+  });
+
   app.get("/api/state", async (_req, res) => {
     const creds = await getCredentials();
     const identity = await getKv("identity", null);
     const config = await getKv("watch_config", null);
+    const seen = await listSeen(6, null);
+    // probe Telegram once: a chat id that can't receive messages is the most
+    // common misconfiguration, so surface it on the dashboard.
+    let telegramOk = null;
+    const chatId = process.env.TELEGRAM_CHAT_ID;
+    if (chatId) {
+      telegramOk = await probeTelegram(chatId);
+    }
     res.json({
       loggedIn: !!creds,
       identity,
       config,
+      seen,
+      telegramOk,
       watcher: getWatcherState(),
       intervalMin: Number(process.env.CHECK_INTERVAL_MIN) || 10,
     });
@@ -261,6 +295,7 @@ function loggedInPage(identity, state) {
   const lastCheck = state.lastCheck
     ? new Date(state.lastCheck).toLocaleString("ar-SA", { timeZone: "Asia/Riyadh" })
     : "لم يفحص بعد";
+  const err = state.lastError ? `<div class="card error"><b>آخر خطأ:</b> ${escape(state.lastError)}</div>` : "";
   return `${head("لوحة التحكم")}
 <div class="card">
   <div class="row"><h2>🤖 بوت طويق شغّال</h2>
@@ -272,8 +307,52 @@ function loggedInPage(identity, state) {
     <form method="post" action="/logout" onsubmit="return confirm('متأكد من تسجيل الخروج؟')">
       <button class="btn danger">🚪 تسجيل الخروج</button></form>
   </div>
-</div>${foot()}`;
+</div>
+<div class="card" id="status-card"><p class="muted">جاري تحميل الحالة…</p></div>
+<div class="card" id="seen-card"><p class="muted">جاري تحميل آخر العناصر…</p></div>
+${err}
+<script>${DASHBOARD_JS}</script>
+${foot()}`;
 }
+
+// Dashboard client script. Kept as a plain string so the template literals here
+// don't clash with the server-side ones in loggedInPage.
+const DASHBOARD_JS = `
+async function load() {
+  try {
+    const s = await (await fetch("/api/state")).json();
+    const w = s.watcher || {};
+    const cfg = s.config || {};
+    const scopes = {assignments:"الواجبات", materials:"المواد", exams:"الاختبارات", grades:"الدرجات"};
+    const chips = Object.entries(scopes).map(function(e){
+      return cfg[e[0]] === false
+        ? '<span class="badge off">' + e[1] + ': متوقف</span>'
+        : '<span class="badge ok">' + e[1] + ': شغّال</span>';
+    }).join(" ");
+    document.getElementById("status-card").innerHTML =
+      "<h3>الحالة</h3><div class='row'>" + chips + "</div>" +
+      "<p class='muted'>المراقبة: " + (w.running ? "🟢 تعمل الآن" : "🔴 متوقفة") +
+      " · الفحص كل " + s.intervalMin + " دقيقة · فشل متتالي: " + (w.consecutiveFailures || 0) + "</p>" +
+      "<p class='muted'>تلجرام: " + (s.telegramOk === false
+        ? "🔴 ما يوصل (راجع TELEGRAM_CHAT_ID)"
+        : "🟢 جاهز") + "</p>";
+    const rows = (s.seen || []).map(function(r){
+      return "<div class='item'><span class='badge " + (r.kind||"") + "'>" +
+        String(r.kind||"").toUpperCase() + "</span>" +
+        "<b>" + escapeH(r.title) + "</b><br>" +
+        "<span class='muted'>" + escapeH(r.subject||"") +
+        (r.dueAt ? " · موعد التسليم: " + escapeH(r.dueAt) : "") +
+        "</span></div>";
+    }).join("") || '<p class="muted">لا يوجد بعد — اضغط "افحص الحين"</p>';
+    document.getElementById("seen-card").innerHTML = "<h3>آخر ما رُصد</h3>" + rows;
+  } catch(e) {
+    document.getElementById("status-card").innerHTML = '<p class="muted">تعذّر تحميل الحالة</p>';
+  }
+}
+function escapeH(s){return String(s??"").replace(/&/g,"&amp;").replace(/</g,"&lt;");}
+load();
+setInterval(load, 15000);
+`;
 
 function escape(s) {
   return String(s ?? "")

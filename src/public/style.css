@@ -91,3 +91,19 @@ input:focus { border-color: var(--accent-2); }
   color: #7fe3ad;
   border: 1px solid rgba(47, 191, 113, .4);
 }
+.badge.off {
+  background: rgba(229, 72, 77, .14);
+  color: #ffb4b6;
+  border-color: rgba(229, 72, 77, .4);
+}
+.badge.assignment { background: rgba(124,92,255,.18); color: #c4b6ff; border-color: rgba(124,92,255,.45); }
+.badge.material   { background: rgba(47,191,113,.16); color: #7fe3ad; border-color: rgba(47,191,113,.4); }
+.badge.exam       { background: rgba(255,176,32,.16); color: #ffd48a; border-color: rgba(255,176,32,.45); }
+.badge.grade      { background: rgba(79,195,247,.16); color: #a8e4ff; border-color: rgba(79,195,247,.45); }
+.item {
+  border-top: 1px solid var(--line);
+  padding: 12px 0;
+}
+.item .badge { margin-bottom: 6px; display: inline-block; }
+h3 { margin: 0 0 10px; font-size: 16px; color: var(--muted); }
+.card + .card { margin-top: 14px; }

@@ -77,6 +77,12 @@ function handleMessage(update) {
   const text = msg.text.trim();
   const chatId = msg.chat.id;
 
+  // Remember the last chat that messaged the bot so the owner can look it up
+  // at /api/whoami and paste it into TELEGRAM_CHAT_ID.
+  import("./store.js")
+    .then(({ setKv }) => setKv("last_chat_id", String(chatId)))
+    .catch(() => {});
+
   // Only the owner chat is allowed to control the bot.
   const allowed = process.env.TELEGRAM_CHAT_ID
     ? String(chatId) === String(process.env.TELEGRAM_CHAT_ID)
