@@ -1,0 +1,93 @@
+:root {
+  --bg: #0f1115;
+  --card: #181c24;
+  --card-2: #1f2430;
+  --text: #e8eaee;
+  --muted: #9aa3b2;
+  --accent: #4f29b7;
+  --accent-2: #7c5cff;
+  --ok: #2fbf71;
+  --danger: #e5484d;
+  --line: #2a3040;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background:
+    radial-gradient(1200px 600px at 80% -10%, rgba(124, 92, 255, .15), transparent 60%),
+    var(--bg);
+  color: var(--text);
+  font-family: "Segoe UI", "Noto Sans Arabic", system-ui, -apple-system, sans-serif;
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+.wrap { width: 100%; max-width: 520px; }
+.card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 28px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, .45);
+}
+.card.ok { border-color: rgba(47, 191, 113, .5); }
+.card.error { border-color: rgba(229, 72, 77, .55); }
+.logo {
+  display: inline-block;
+  font-weight: 800;
+  font-size: 14px;
+  letter-spacing: 2px;
+  color: #fff;
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  padding: 6px 14px;
+  border-radius: 999px;
+  margin-bottom: 16px;
+}
+h2 { margin: 0 0 8px; font-size: 22px; }
+p { margin: 0 0 14px; line-height: 1.6; }
+.muted { color: var(--muted); }
+.small { font-size: 12px; }
+.row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+form { display: grid; gap: 14px; }
+label { display: grid; gap: 6px; font-size: 13px; color: var(--muted); }
+input {
+  background: var(--card-2);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 12px 14px;
+  color: var(--text);
+  font-size: 15px;
+  outline: none;
+  transition: border-color .15s;
+}
+input:focus { border-color: var(--accent-2); }
+.btn {
+  display: inline-block;
+  border: 1px solid var(--line);
+  background: var(--card-2);
+  color: var(--text);
+  border-radius: 10px;
+  padding: 11px 18px;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+  text-decoration: none;
+  transition: transform .08s, background .15s;
+}
+.btn:hover { background: #262c3a; }
+.btn:active { transform: scale(.97); }
+.btn[type="submit"] {
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  border: none;
+}
+.btn.danger { color: #ffb4b6; border-color: rgba(229, 72, 77, .5); }
+.badge {
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgba(47, 191, 113, .16);
+  color: #7fe3ad;
+  border: 1px solid rgba(47, 191, 113, .4);
+}

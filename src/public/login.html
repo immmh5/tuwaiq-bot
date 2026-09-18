@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>تسجيل الدخول — بوت طويق</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div class="wrap">
+  <div class="card">
+    <div class="logo">طويق</div>
+    <h2>ربط حساب طويق</h2>
+    <p class="muted">سجّل دخولك مرة وحدة. البوت يحتفظ بالجلسة ويجدّدها تلقائيًا.</p>
+    <form method="post" action="/login" autocomplete="off">
+      <label>
+        <span>البريد الإلكتروني</span>
+        <input type="text" name="username" inputmode="email" placeholder="student@tuwaiq.edu.sa" required autofocus>
+      </label>
+      <label>
+        <span>كلمة المرور</span>
+        <input type="password" name="password" placeholder="••••••••" required>
+      </label>
+      <button class="btn" type="submit">ربط الحساب →</button>
+    </form>
+    <p class="muted small">🔒 البيانات تُرسل فقط إلى خادمك على Render، وتُخزّن في قاعدة بياناتك. لا طرف ثالث.</p>
+  </div>
+</div>
+</body>
+</html>

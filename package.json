@@ -1,0 +1,19 @@
+{
+  "name": "tuwaiq-bot",
+  "version": "1.0.0",
+  "description": "Bot monitors sc.tuwaiq.edu.sa (assignments, materials, exams, grades) and notifies via Telegram",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "pg": "^8.12.0",
+    "node-fetch": "^3.3.2"
+  }
+}
