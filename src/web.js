@@ -26,27 +26,41 @@ export function createWebApp() {
   app.use("/static", express.static(path.join(__dirname, "public")));
 
   // --- health check for Render / uptime monitors ---
+  // Must never throw: a failing DB here would crash the process and Render
+  // would flap the service forever. Report degraded status instead.
   app.get("/health", async (_req, res) => {
-    const creds = await getCredentials();
-    const tokens = await getTokens();
-    const state = getWatcherState();
-    const ok = !!creds;
-    res.status(ok ? 200 : 503).json({
-      status: ok ? "ok" : "no_account",
-      loggedIn: ok,
-      tokenValid: !!(tokens?.accessToken && tokens.accessExpiresAt > Date.now() / 1000),
-      watcher: state,
-      time: new Date().toISOString(),
-    });
+    try {
+      const creds = await getCredentials();
+      const tokens = await getTokens();
+      const state = getWatcherState();
+      const ok = !!creds;
+      res.status(ok ? 200 : 503).json({
+        status: ok ? "ok" : "no_account",
+        loggedIn: ok,
+        tokenValid: !!(tokens?.accessToken && tokens.accessExpiresAt > Date.now() / 1000),
+        watcher: state,
+        time: new Date().toISOString(),
+      });
+    } catch (err) {
+      res.status(503).json({
+        status: "degraded",
+        error: err.message,
+        time: new Date().toISOString(),
+      });
+    }
   });
 
   // --- login page ---
   app.get("/", async (_req, res) => {
-    const creds = await getCredentials();
-    if (creds) {
-      const id = await getKv("identity", null);
-      const state = getWatcherState();
-      return res.send(loggedInPage(id, state));
+    try {
+      const creds = await getCredentials();
+      if (creds) {
+        const id = await getKv("identity", null);
+        const state = getWatcherState();
+        return res.send(loggedInPage(id, state));
+      }
+    } catch (err) {
+      return res.send(errorPage(`قاعدة البيانات غير متاحة: ${err.message}`));
     }
     return res.sendFile(path.join(__dirname, "public", "login.html"));
   });

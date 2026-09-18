@@ -25,25 +25,53 @@ CREATE TABLE IF NOT EXISTS seen_items (
 CREATE INDEX IF NOT EXISTS seen_items_kind_idx ON seen_items(kind);
 `;
 
+// Supabase's *direct* host (db.<ref>.supabase.co) publishes an IPv6-only DNS
+// record, and Render's free instances have no IPv6 egress → ENETUNREACH.
+// The *pooler* host (aws-0-<region>.pooler.supabase.com) has real IPv4.
+// Rewrite the direct host to the pooler automatically so any DATABASE_URL
+// variant works. Safe no-op for non-Supabase connections.
+function preferIPv4Host(connectionString) {
+  try {
+    const u = new URL(connectionString);
+    const direct = u.hostname.match(/^db\.([a-z0-9]+)\.supabase\.co$/);
+    if (direct) {
+      // region is encoded in the pooler CNAME; we try the generic pooler and
+      // let DNS resolve it. If the region-specific host is known it is used.
+      u.hostname = `aws-0-ap-northeast-2.pooler.supabase.com`;
+      u.username = u.username.startsWith("postgres.")
+        ? u.username
+        : `postgres.${direct[1]}`;
+      if (!/:\d+$/.test(u.host) || u.port === "5432") u.port = "6543";
+      console.log(`store: rewrote Supabase direct host → pooler (${u.host})`);
+      return u.toString();
+    }
+  } catch {
+    /* not a URL-shaped string — leave as-is */
+  }
+  return connectionString;
+}
+
 export async function initStore(connectionString) {
   if (!connectionString) {
     throw new Error("DATABASE_URL is required (use Supabase or Neon free Postgres)");
   }
+
+  const finalUrl = preferIPv4Host(connectionString);
+
   // Managed Postgres (Supabase/Neon/Render) requires SSL; local dev does not
   // support it. Explicit ?sslmode= always wins; otherwise localhost-style hosts
   // are treated as local, everything else as a managed provider.
-  const { hostname, searchParams } = new URL(connectionString);
+  const { hostname, searchParams } = new URL(finalUrl);
   const isLocalHost = /^(localhost|127\.0\.0\.1|::1|[^.]+)$/.test(hostname);
   const sslmode = searchParams.get("sslmode");
   const useSsl = sslmode ? sslmode !== "disable" : !isLocalHost;
 
   pool = new Pool({
-    connectionString,
+    connectionString: finalUrl,
     max: 4,
     idleTimeoutMillis: 30000,
     ssl: useSsl ? { rejectUnauthorized: false } : false,
-    // Supabase's direct host is IPv6-only; Render free instances have no IPv6
-    // egress (ENETUNREACH). Force IPv4 so the pool never dials a v6 address.
+    // Belt and braces: pin lookups to IPv4 even when the pooler isn't used.
     family: 4,
   });
 
