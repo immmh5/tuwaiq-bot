@@ -26,23 +26,26 @@ export function createWebApp() {
   app.use("/static", express.static(path.join(__dirname, "public")));
 
   // --- health check for Render / uptime monitors ---
-  // Must never throw: a failing DB here would crash the process and Render
-  // would flap the service forever. Report degraded status instead.
+  // Render requires a 2xx here or the deploy never succeeds. "No account yet"
+  // is a valid state (the user hasn't logged in), not a service failure — so we
+  // return 200 and surface the linkage state in the payload. Real failures
+  // (process alive but DB unreachable) still report degraded.
   app.get("/health", async (_req, res) => {
     try {
       const creds = await getCredentials();
       const tokens = await getTokens();
       const state = getWatcherState();
-      const ok = !!creds;
-      res.status(ok ? 200 : 503).json({
-        status: ok ? "ok" : "no_account",
-        loggedIn: ok,
+      res.status(200).json({
+        status: creds ? "ok" : "no_account",
+        loggedIn: !!creds,
         tokenValid: !!(tokens?.accessToken && tokens.accessExpiresAt > Date.now() / 1000),
         watcher: state,
         time: new Date().toISOString(),
       });
     } catch (err) {
-      res.status(503).json({
+      // Store may be briefly unavailable (auto-paused Supabase waking up).
+      // Still answer 200 so Render doesn't kill the deploy.
+      res.status(200).json({
         status: "degraded",
         error: err.message,
         time: new Date().toISOString(),
