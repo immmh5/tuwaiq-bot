@@ -5,6 +5,8 @@ import {
   getAvailableAttempts,
   getGrades,
   getStudentHome,
+  getMyCourses,
+  getMySchedule,
   normalizeAssignments,
   normalizeMaterials,
   normalizeExams,
@@ -89,6 +91,33 @@ async function ensureValidTokens() {
 
 // --- main check ---------------------------------------------------------------
 
+// Shared scope fetcher used both by the periodic check and the /list Telegram
+// commands. Returns normalised items for one scope, retrying once with fresh
+// tokens when the backend rejects the JWT.
+export async function fetchScope(scope, accessToken) {
+  const fetchers = {
+    assignments: (t) => getMyAssignments(t),
+    materials: (t) => getMyMaterials(t),
+    exams: (t) => getAvailableAttempts(t),
+    grades: (t) => getGrades(t),
+    courses: (t) => getMyCourses(t),
+    schedule: (t) => getMySchedule(t),
+    home: (t) => getStudentHome(t),
+  };
+  const fn = fetchers[scope];
+  if (!fn) throw new Error(`unknown scope: ${scope}`);
+  try {
+    return normalize[scope] ? normalize[scope](await fn(accessToken)) : await fn(accessToken);
+  } catch (err) {
+    if (/HTTP (401|500)|auth\/token problem/.test(err.message)) {
+      await invalidateTokens();
+      const fresh = await ensureValidTokens();
+      return normalize[scope] ? normalize[scope](await fn(fresh)) : await fn(fresh);
+    }
+    throw err;
+  }
+}
+
 export async function runCheckOnce() {
   if (running) return { skipped: true };
   running = true;
@@ -101,35 +130,14 @@ export async function runCheckOnce() {
       grades: true,
     });
 
-    const fetchers = {
-      assignments: () => getMyAssignments(accessToken),
-      materials: () => getMyMaterials(accessToken),
-      exams: () => getAvailableAttempts(accessToken),
-      grades: () => getGrades(accessToken),
-    };
-
     const results = {};
-    for (const scope of Object.keys(fetchers)) {
+    for (const scope of Object.keys({ assignments: 1, materials: 1, exams: 1, grades: 1 })) {
       if (!config[scope]) continue;
       try {
-        results[scope] = normalize[scope](await fetchers[scope]());
+        results[scope] = await fetchScope(scope, accessToken);
       } catch (err) {
-        // A bad/expired token surfaces as a 500 from this backend. Drop the
-        // tokens and let the next cycle log in fresh rather than failing hard.
-        if (/HTTP (401|500)|auth\/token problem/.test(err.message)) {
-          console.log(`${scope}: token looks invalid, invalidating`);
-          await invalidateTokens();
-          accessToken = await ensureValidTokens();
-          try {
-            results[scope] = normalize[scope](await fetchers[scope]());
-          } catch (err2) {
-            lastError = `${scope}: ${err2.message}`;
-            console.error(`${scope} retry failed:`, err2.message);
-          }
-        } else {
-          lastError = `${scope}: ${err.message}`;
-          console.error(`${scope} failed:`, err.message);
-        }
+        lastError = `${scope}: ${err.message}`;
+        console.error(`${scope} failed:`, err.message);
       }
     }
 

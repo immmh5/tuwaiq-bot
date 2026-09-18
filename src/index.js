@@ -1,12 +1,10 @@
 // src/index.js — boot: store, telegram commands, web server, watcher
 import express from "express";
-import { initStore, getKv, setKv, getCredentials, resetSeen, listSeen } from "./store.js";
+import { initStore, getKv, setKv, getCredentials, resetSeen, listSeen, getTokens } from "./store.js";
 import { createWebApp } from "./web.js";
 import { setTelegramToken, on, startPolling, sendMessage, escapeHtml } from "./telegram.js";
-import { runCheckOnce, getWatcherState, startWatcher, notifyOwner } from "./watcher.js";
-import { getMyAssignments, normalizeAssignments } from "./tuwaiq.js";
-import { getTokens } from "./store.js";
-import { getStudentHome } from "./tuwaiq.js";
+import { runCheckOnce, getWatcherState, startWatcher, notifyOwner, fetchScope } from "./watcher.js";
+import { getMyAssignments, getStudentHome, normalizeAssignments } from "./tuwaiq.js";
 
 const PORT = process.env.PORT || 3000;
 
@@ -174,6 +172,204 @@ function registerCommands() {
     if (lines.length === 1) lines.push("<code>" + escapeHtml(JSON.stringify(home).slice(0, 800)) + "</code>");
     await sendMessage(chatId, lines.join("\n"));
   });
+
+  // ===== comprehensive listing commands =====
+  // Each /list-* command pulls a scope live from the platform (never the cache),
+  // so the user always sees the current state, not the last snapshot.
+
+  on("/list-assignments", async ({ chatId, args }) => {
+    if (!(await requireLogin(chatId))) return;
+    const tokens = await getTokens();
+    const items = await fetchScope("assignments", tokens.accessToken);
+    const filter = args[0]; // pending | graded | overdue
+    let rows = items;
+    if (filter === "pending") rows = items.filter((a) => !["Graded", "Submitted"].includes(a.status));
+    if (filter === "graded") rows = items.filter((a) => a.gradePoints != null || a.status === "Graded");
+    if (filter === "overdue") rows = items.filter((a) => a.isOverdue);
+    if (!rows.length) {
+      await sendMessage(chatId, `📭 ما في واجبات${filter ? ` (${filter})` : ""}.`);
+      return;
+    }
+    await sendMessage(chatId, formatList("📝 كل الواجبات", rows.slice(0, 15), formatAssignment));
+  });
+
+  on("/list-materials", async ({ chatId }) => {
+    if (!(await requireLogin(chatId))) return;
+    const tokens = await getTokens();
+    const items = await fetchScope("materials", tokens.accessToken);
+    if (!items.length) {
+      await sendMessage(chatId, "📭 ما في مواد منشورة.");
+      return;
+    }
+    await sendMessage(chatId, formatList("📚 كل المواد", items.slice(0, 15), formatMaterial));
+  });
+
+  on("/list-exams", async ({ chatId }) => {
+    if (!(await requireLogin(chatId))) return;
+    const tokens = await getTokens();
+    const items = await fetchScope("exams", tokens.accessToken);
+    if (!items.length) {
+      await sendMessage(chatId, "📭 ما في اختبارات متاحة الحين.");
+      return;
+    }
+    await sendMessage(chatId, formatList("📄 الاختبارات المتاحة", items.slice(0, 15), formatExam));
+  });
+
+  on("/list-grades", async ({ chatId }) => {
+    if (!(await requireLogin(chatId))) return;
+    const tokens = await getTokens();
+    const items = await fetchScope("grades", tokens.accessToken);
+    if (!items.length) {
+      await sendMessage(chatId, "📭 ما في درجات منشورة.");
+      return;
+    }
+    await sendMessage(chatId, formatList("🏆 كل الدرجات", items.slice(0, 15), formatGrade));
+  });
+
+  on("/list-courses", async ({ chatId }) => {
+    if (!(await requireLogin(chatId))) return;
+    const tokens = await getTokens();
+    const items = await fetchScope("courses", tokens.accessToken);
+    if (!Array.isArray(items) || !items.length) {
+      await sendMessage(chatId, "📭 ما في مقررات.");
+      return;
+    }
+    const lines = ["<b>🎓 مقرراتي</b>"];
+    for (const c of items.slice(0, 20)) {
+      const t = c.title || c.name || "—";
+      lines.push(`• <b>${escapeHtml(String(t))}</b>${c.teacherName ? ` — ${escapeHtml(c.teacherName)}` : ""}`);
+    }
+    await sendMessage(chatId, lines.join("\n"));
+  });
+
+  on("/list-schedule", async ({ chatId }) => {
+    if (!(await requireLogin(chatId))) return;
+    const tokens = await getTokens();
+    const items = await fetchScope("schedule", tokens.accessToken);
+    if (!Array.isArray(items) || !items.length) {
+      await sendMessage(chatId, "📭 ما في جدول الحين." + (items ? ` <code>${escapeHtml(JSON.stringify(items).slice(0, 300))}</code>` : ""));
+      return;
+    }
+    const lines = ["<b>🗓 الجدول الأسبوعي</b>"];
+    for (const s of items.slice(0, 20)) {
+      lines.push(`• <b>${escapeHtml(String(s.title || s.subjectName || "—"))}</b> <code>${escapeHtml(String(s.day ?? s.date ?? ""))}</code>`);
+    }
+    await sendMessage(chatId, lines.join("\n"));
+  });
+
+  // "show me everything" — the full platform snapshot in one command
+  on("/all", async ({ chatId }) => {
+    if (!(await requireLogin(chatId))) return;
+    const tokens = await getTokens();
+    const t = tokens.accessToken;
+    const parts = [];
+    const scopes = [
+      ["assignments", "📝 الواجبات", formatAssignment],
+      ["materials", "📚 المواد", formatMaterial],
+      ["exams", "📄 الاختبارات", formatExam],
+      ["grades", "🏆 الدرجات", formatGrade],
+    ];
+    for (const [scope, label, fmt] of scopes) {
+      try {
+        const items = await fetchScope(scope, t);
+        parts.push(
+          items.length
+            ? formatList(label, items.slice(0, 6), fmt) + (items.length > 6 ? `\n<i>و ${items.length - 6} أخرى…</i>` : "")
+            : `${label}\n<i>فاضي</i>`
+        );
+      } catch (err) {
+        parts.push(`${label}\n<i>خطأ: ${escapeHtml(err.message)}</i>`);
+      }
+    }
+    for (const chunk of chunkText(parts.join("\n\n"), 3900)) {
+      await sendMessage(chatId, chunk);
+    }
+  });
+
+  on("/help", async ({ chatId }) => {
+    await sendMessage(chatId, HELP_TEXT, { parseMode: "HTML" });
+  });
+}
+
+const HELP_TEXT = `<b>🤖 أوامر بوت طويق</b>
+
+<b>كل المنصة:</b>
+/all — كل شي في المنصة (واجبات + مواد + اختبارات + درجات)
+/dashboard — ملخص سريع من لوحة طويق
+
+<b>أوامر مخصصة لكل نطاق:</b>
+/list-assignments — كل الواجبات
+/list-assignments pending — غير مسلّمة بس
+/list-assignments graded — المصححة
+/list-assignments overdue — المتأخرة
+/list-materials — كل المواد
+/list-exams — الاختبارات المتاحة
+/list-grades — كل الدرجات
+/list-courses — مقرراتي
+/list-schedule — الجدول الأسبوعي
+/due — الواجبات المستحقة خلال ٢٤ ساعة
+
+<b>التحكم:</b>
+/status — حالة البوت والاتصال
+/check — فحص فوري
+/watch assignments on — تشغيل مراقبة نطاق
+/watch exams off — إيقافها
+/interval 15 — تغيير دقيقية الفحص
+/seen — آخر ما رُصد
+/reset — مسح السجل
+/who — الحساب الحالي
+/logout — تسجيل الخروج
+/help — هذه القائمة`;
+
+function chunkText(text, max) {
+  if (text.length <= max) return [text];
+  const out = [];
+  let rest = text;
+  while (rest.length > max) {
+    let cut = rest.lastIndexOf("\n\n", max);
+    if (cut < max * 0.5) cut = rest.lastIndexOf("\n", max);
+    if (cut < 1) cut = max;
+    out.push(rest.slice(0, cut));
+    rest = rest.slice(cut).trimStart();
+  }
+  if (rest.length) out.push(rest);
+  return out;
+}
+
+function formatList(header, items, fmt) {
+  return [header, ...items.map(fmt)].join("\n");
+}
+
+function formatAssignment(a) {
+  const bits = [`📝 <b>${escapeHtml(a.title)}</b>`];
+  if (a.subject) bits.push(`   📚 ${escapeHtml(a.subject)}`);
+  if (a.dueAt) bits.push(`   ⏰ <code>${escapeHtml(String(a.dueAt))}</code>${a.isOverdue ? " 🔴 متأخر" : a.isDueSoon ? " 🟡 قريب" : ""}`);
+  if (a.status) bits.push(`   📊 ${escapeHtml(a.status)}`);
+  if (a.gradePoints != null && a.maxPoints != null) bits.push(`   🏆 ${a.gradePoints}/${a.maxPoints}`);
+  return bits.join("\n");
+}
+
+function formatMaterial(m) {
+  const bits = [`📚 <b>${escapeHtml(m.title)}</b>`];
+  if (m.subject) bits.push(`   📗 ${escapeHtml(m.subject)}`);
+  if (m.contentType) bits.push(`   📎 ${escapeHtml(m.contentType)}`);
+  if (m.createdAt) bits.push(`   📅 <code>${escapeHtml(String(m.createdAt))}</code>`);
+  return bits.join("\n");
+}
+
+function formatExam(e) {
+  const bits = [`📄 <b>${escapeHtml(e.title)}</b>`];
+  if (e.subject) bits.push(`   📚 ${escapeHtml(e.subject)}`);
+  if (e.startsAt) bits.push(`   ▶️ <code>${escapeHtml(String(e.startsAt))}</code>`);
+  if (e.endsAt) bits.push(`   ⏹ <code>${escapeHtml(String(e.endsAt))}</code>`);
+  if (e.durationMin) bits.push(`   ⏱ ${e.durationMin} دقيقة`);
+  if (e.status) bits.push(`   📊 ${escapeHtml(e.status)}`);
+  return bits.join("\n");
+}
+
+function formatGrade(g) {
+  const score = g.score != null ? `   🏆 <b>${g.score}${g.maxScore != null ? `/${g.maxScore}` : ""}</b>` : "";
+  return [`🏆 <b>${escapeHtml(g.title)}</b>`, g.subject ? `   📚 ${escapeHtml(g.subject)}` : "", score].filter(Boolean).join("\n");
 }
 
 function isWithin24h(iso) {
