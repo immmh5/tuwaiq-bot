@@ -97,6 +97,75 @@ export function createWebApp() {
   });
 
   // --- dashboard data ---
+  // --- control endpoints (used by the MCP integration / external scripts) ---
+  // Protected with a shared secret so only the owner can drive the bot.
+  app.use("/ctl", (req, res, next) => {
+    const secret = process.env.CONTROL_SECRET;
+    if (!secret) return res.status(503).json({ error: "CONTROL_SECRET not configured" });
+    const auth = req.headers.authorization || "";
+    const token = auth.replace(/^Bearer\s+/i, "");
+    if (token !== secret) return res.status(401).json({ error: "unauthorized" });
+    next();
+  });
+
+  app.get("/ctl/status", async (_req, res) => {
+    const creds = await getCredentials();
+    const identity = await getKv("identity", null);
+    const config = await getKv("watch_config", {
+      assignments: true,
+      materials: true,
+      exams: true,
+      grades: true,
+    });
+    res.json({
+      running: getWatcherState().running,
+      loggedIn: !!creds,
+      identity,
+      config,
+      watcher: getWatcherState(),
+      intervalMin: Number(process.env.CHECK_INTERVAL_MIN) || 10,
+    });
+  });
+
+  app.post("/ctl/pause", async (_req, res) => {
+    stopWatcher();
+    res.json({ ok: true, running: false, message: "watcher paused" });
+  });
+
+  app.post("/ctl/resume", async (_req, res) => {
+    const creds = await getCredentials();
+    if (!creds) return res.status(400).json({ ok: false, error: "no account linked" });
+    startWatcher();
+    res.json({ ok: true, running: true, message: "watcher resumed" });
+  });
+
+  app.post("/ctl/check", async (_req, res) => {
+    const r = await runCheckOnce();
+    res.json(r);
+  });
+
+  app.post("/ctl/watch", async (req, res) => {
+    const { scope, enabled } = req.body || {};
+    const valid = ["assignments", "materials", "exams", "grades"];
+    if (!valid.includes(scope) || typeof enabled !== "boolean") {
+      return res.status(400).json({ error: "bad request; need scope + boolean enabled" });
+    }
+    const config = await getKv("watch_config", {});
+    config[scope] = enabled;
+    await setKv("watch_config", config);
+    res.json({ ok: true, config });
+  });
+
+  app.get("/ctl/seen", async (req, res) => {
+    const rows = await listSeen(Number(req.query.limit) || 20, req.query.kind || null);
+    res.json(rows);
+  });
+
+  app.post("/ctl/reset", async (_req, res) => {
+    await resetSeen();
+    res.json({ ok: true, message: "seen log cleared" });
+  });
+
   app.get("/api/state", async (_req, res) => {
     const creds = await getCredentials();
     const identity = await getKv("identity", null);
