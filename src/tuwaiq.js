@@ -76,10 +76,60 @@ async function _getExamModes(accessToken) {
 }
 
 // --- Grades ------------------------------------------------------------------
+// NOTE: /grades is an Admin/Teacher-only endpoint (verified in the frontend
+// bundle: GradesPage uses role:"Admin"). Students get a 403 there. Real student
+// grades live in my-assignments (gradePoints) and attempts (exam results), so
+// the student-facing "grades" is derived from those.
 
 async function _getGrades(accessToken) {
+  // Deprecated as a primary source: kept for compatibility but the student
+ // grade view is built from assignments + attempts in fetchScope.
   return fetchJson(`${BASE}/grades`, { headers: authHeaders(accessToken) });
 }
+
+// Student-visible grades assembled from sources the student can actually read.
+async function _getMyGrades(accessToken) {
+  const [assignments, attempts] = await Promise.all([
+    getMyAssignments(accessToken).catch(() => ({ items: [] })),
+    getAvailableAttempts(accessToken).catch(() => ({ items: [] })),
+  ]);
+  const out = [];
+  for (const a of normalizeAssignments(assignments)) {
+    if (a.gradePoints != null || a.status === "Graded") {
+      out.push({
+        id: `grd-${a.id}`,
+        kind: "grade",
+        title: a.title,
+        subject: a.subject,
+        score: a.gradePoints ?? null,
+        maxScore: a.maxPoints ?? null,
+        status: a.status,
+        createdAt: a.dueAt,
+        url: a.url,
+        raw: a.raw,
+      });
+    }
+  }
+  for (const e of normalizeExams(attempts)) {
+    if (e.status && /completed|graded|finished/i.test(e.status)) {
+      out.push({
+        id: `grd-${e.id}`,
+        kind: "grade",
+        title: e.title,
+        subject: e.subject,
+        score: e.score ?? null,
+        maxScore: null,
+        status: e.status,
+        createdAt: e.endsAt,
+        url: e.url,
+        raw: e.raw,
+      });
+    }
+  }
+  return out;
+}
+
+export const getMyGrades = bind("getMyGrades", _getMyGrades);
 
 async function _getGradesDropdown(accessToken) {
   return fetchJson(`${BASE}/grades/dropdown`, { headers: authHeaders(accessToken) });
@@ -107,6 +157,36 @@ async function _getMySchedule(accessToken, weekStart) {
     headers: authHeaders(accessToken),
   });
 }
+
+// --- Notifications / announcements ------------------------------------------
+// These power the platform's bell icon and are the fastest way to see anything
+// new across all subjects at once.
+
+async function _getNotifications(accessToken, page = 1, pageSize = 20) {
+  return fetchJson(`${BASE}/notifications?page=${page}&pageSize=${pageSize}`, {
+    headers: authHeaders(accessToken),
+  });
+}
+
+async function _getUnreadCount(accessToken) {
+  return fetchJson(`${BASE}/notifications/unread-count`, { headers: authHeaders(accessToken) });
+}
+
+async function _getCommunications(accessToken, page = 1, pageSize = 20) {
+  return fetchJson(
+    `${BASE}/communications?page=${page}&pageSize=${pageSize}`,
+    { headers: authHeaders(accessToken) }
+  );
+}
+
+async function _getCommunicationsUnread(accessToken) {
+  return fetchJson(`${BASE}/communications/unread-count`, { headers: authHeaders(accessToken) });
+}
+
+export const getNotifications = bind("getNotifications", _getNotifications);
+export const getUnreadCount = bind("getUnreadCount", _getUnreadCount);
+export const getCommunications = bind("getCommunications", _getCommunications);
+export const getCommunicationsUnread = bind("getCommunicationsUnread", _getCommunicationsUnread);
 
 // --- Normalisation -----------------------------------------------------------
 // The API shapes differ slightly per resource; normalise to a flat list of items
@@ -144,6 +224,9 @@ export function normalizeMaterials(payload) {
     contentType: m.contentType || null,
     summary: m.summary || null,
     createdAt: m.createdAt || m.publishedAt || null,
+    // The frontend modal downloads via href = fileUrl ?? externalUrl, so both
+    // are the real "get this file" targets for the /download command.
+    fileUrl: m.fileUrl || null,
     externalUrl: m.externalUrl || null,
     url: `https://sc.tuwaiq.edu.sa/student/materials`,
     raw: m,
@@ -182,3 +265,26 @@ export function normalizeGrades(payload) {
     raw: g,
   }));
 }
+
+export function normalizeNotifications(payload) {
+  const rows = payload?.items || payload?.data || payload?.notifications || payload || [];
+  return (Array.isArray(rows) ? rows : rows?.items || []).map((n) => ({
+    id: `ntf-${n.id}`,
+    kind: "notification",
+    title: n.title || n.subject || n.message?.slice(0, 60) || "إشعار",
+    subject: n.subjectName || n.offeringTitle || n.category || null,
+    body: n.message || n.body || n.text || null,
+    read: !!n.isRead,
+    createdAt: n.createdAt || n.sentAt || n.date || null,
+    url: `https://sc.tuwaiq.edu.sa/notifications`,
+    raw: n,
+  }));
+}
+
+export const normalize = {
+  assignments: normalizeAssignments,
+  materials: normalizeMaterials,
+  exams: normalizeExams,
+  grades: normalizeGrades,
+  notifications: normalizeNotifications,
+};

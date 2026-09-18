@@ -4,17 +4,21 @@ import {
   getMyMaterials,
   getAvailableAttempts,
   getGrades,
+  getMyGrades,
   getStudentHome,
   getMyCourses,
   getMySchedule,
+  getNotifications,
   normalizeAssignments,
   normalizeMaterials,
   normalizeExams,
   normalizeGrades,
+  normalizeNotifications,
 } from "./tuwaiq.js";
 
 import * as auth from "./auth.js";
 import { sendMessage, escapeHtml } from "./telegram.js";
+import { fmtDate } from "./format.js";
 import {
   getTokens,
   saveTokens,
@@ -95,24 +99,28 @@ async function ensureValidTokens() {
 // commands. Returns normalised items for one scope, retrying once with fresh
 // tokens when the backend rejects the JWT.
 export async function fetchScope(scope, accessToken) {
+  // Each entry is an async fn returning already-normalised items.
   const fetchers = {
-    assignments: (t) => getMyAssignments(t),
-    materials: (t) => getMyMaterials(t),
-    exams: (t) => getAvailableAttempts(t),
-    grades: (t) => getGrades(t),
-    courses: (t) => getMyCourses(t),
-    schedule: (t) => getMySchedule(t),
-    home: (t) => getStudentHome(t),
+    assignments: async (t) => normalizeAssignments(await getMyAssignments(t)),
+    materials: async (t) => normalizeMaterials(await getMyMaterials(t)),
+    exams: async (t) => normalizeExams(await getAvailableAttempts(t)),
+    // /grades is teacher-only (403 for students); grades are derived from
+    // assignments + exam attempts instead.
+    grades: async (t) => await getMyGrades(t),
+    notifications: async (t) => normalizeNotifications(await getNotifications(t)),
+    courses: async (t) => await getMyCourses(t),
+    schedule: async (t) => await getMySchedule(t),
+    home: async (t) => await getStudentHome(t),
   };
   const fn = fetchers[scope];
   if (!fn) throw new Error(`unknown scope: ${scope}`);
   try {
-    return normalize[scope] ? normalize[scope](await fn(accessToken)) : await fn(accessToken);
+    return await fn(accessToken);
   } catch (err) {
     if (/HTTP (401|500)|auth\/token problem/.test(err.message)) {
       await invalidateTokens();
       const fresh = await ensureValidTokens();
-      return normalize[scope] ? normalize[scope](await fn(fresh)) : await fn(fresh);
+      return await fn(fresh);
     }
     throw err;
   }
@@ -260,20 +268,6 @@ function formatItem(scope, item) {
   }
   parts.push(`🔗 <a href="${item.url}">فتح في طويق</a>`);
   return parts.join("\n");
-}
-
-function fmtDate(iso) {
-  if (!iso) return "—";
-  try {
-    const d = new Date(iso);
-    return d.toLocaleString("ar-SA", {
-      dateStyle: "medium",
-      timeStyle: "short",
-      timeZone: "Asia/Riyadh",
-    });
-  } catch {
-    return iso;
-  }
 }
 
 export async function notifyOwner(text) {

@@ -4,7 +4,17 @@ import { initStore, getKv, setKv, getCredentials, resetSeen, listSeen, getTokens
 import { createWebApp } from "./web.js";
 import { setTelegramToken, on, startPolling, sendMessage, escapeHtml } from "./telegram.js";
 import { runCheckOnce, getWatcherState, startWatcher, notifyOwner, fetchScope } from "./watcher.js";
-import { getMyAssignments, getStudentHome, normalizeAssignments } from "./tuwaiq.js";
+import { getMyAssignments, getStudentHome, getUnreadCount, normalizeAssignments } from "./tuwaiq.js";
+import {
+  chunkText,
+  formatList,
+  formatAssignment,
+  formatMaterial,
+  formatExam,
+  formatGrade,
+  formatNotification,
+  escapeHtml as esc,
+} from "./format.js";
 
 const PORT = process.env.PORT || 3000;
 
@@ -174,56 +184,48 @@ function registerCommands() {
   });
 
   // ===== comprehensive listing commands =====
-  // Each /list-* command pulls a scope live from the platform (never the cache),
-  // so the user always sees the current state, not the last snapshot.
+  // Each pulls live from the platform (never a cache) and renders through the
+  // shared formatters so dates, scores and status always look the same.
+
+  const sendList = async (chatId, header, items, fmt) => {
+    if (!items || !items.length) {
+      await sendMessage(chatId, `${header}\n<i>فاضي</i>`);
+      return;
+    }
+    const shown = items.slice(0, 12);
+    const more = items.length > shown.length ? `\n<i>و ${items.length - shown.length} أخرى…</i>` : "";
+    await sendMessage(chatId, formatList(header, shown, fmt) + more);
+  };
 
   on("/list-assignments", async ({ chatId, args }) => {
     if (!(await requireLogin(chatId))) return;
     const tokens = await getTokens();
     const items = await fetchScope("assignments", tokens.accessToken);
-    const filter = args[0]; // pending | graded | overdue
+    const filter = args[0];
     let rows = items;
     if (filter === "pending") rows = items.filter((a) => !["Graded", "Submitted"].includes(a.status));
     if (filter === "graded") rows = items.filter((a) => a.gradePoints != null || a.status === "Graded");
     if (filter === "overdue") rows = items.filter((a) => a.isOverdue);
-    if (!rows.length) {
-      await sendMessage(chatId, `📭 ما في واجبات${filter ? ` (${filter})` : ""}.`);
-      return;
-    }
-    await sendMessage(chatId, formatList("📝 كل الواجبات", rows.slice(0, 15), formatAssignment));
+    const label = { pending: "غير مسلّمة", graded: "المصححة", overdue: "المتأخرة" }[filter];
+    await sendList(chatId, `📝 الواجبات${label ? ` — ${label}` : ""}`, rows, formatAssignment);
   });
 
   on("/list-materials", async ({ chatId }) => {
     if (!(await requireLogin(chatId))) return;
     const tokens = await getTokens();
-    const items = await fetchScope("materials", tokens.accessToken);
-    if (!items.length) {
-      await sendMessage(chatId, "📭 ما في مواد منشورة.");
-      return;
-    }
-    await sendMessage(chatId, formatList("📚 كل المواد", items.slice(0, 15), formatMaterial));
+    await sendList(chatId, "📚 المواد", await fetchScope("materials", tokens.accessToken), formatMaterial);
   });
 
   on("/list-exams", async ({ chatId }) => {
     if (!(await requireLogin(chatId))) return;
     const tokens = await getTokens();
-    const items = await fetchScope("exams", tokens.accessToken);
-    if (!items.length) {
-      await sendMessage(chatId, "📭 ما في اختبارات متاحة الحين.");
-      return;
-    }
-    await sendMessage(chatId, formatList("📄 الاختبارات المتاحة", items.slice(0, 15), formatExam));
+    await sendList(chatId, "📄 الاختبارات المتاحة", await fetchScope("exams", tokens.accessToken), formatExam);
   });
 
   on("/list-grades", async ({ chatId }) => {
     if (!(await requireLogin(chatId))) return;
     const tokens = await getTokens();
-    const items = await fetchScope("grades", tokens.accessToken);
-    if (!items.length) {
-      await sendMessage(chatId, "📭 ما في درجات منشورة.");
-      return;
-    }
-    await sendMessage(chatId, formatList("🏆 كل الدرجات", items.slice(0, 15), formatGrade));
+    await sendList(chatId, "🏆 الدرجات", await fetchScope("grades", tokens.accessToken), formatGrade);
   });
 
   on("/list-courses", async ({ chatId }) => {
@@ -231,13 +233,12 @@ function registerCommands() {
     const tokens = await getTokens();
     const items = await fetchScope("courses", tokens.accessToken);
     if (!Array.isArray(items) || !items.length) {
-      await sendMessage(chatId, "📭 ما في مقررات.");
+      await sendMessage(chatId, "📚 ما في مقررات الحين.");
       return;
     }
     const lines = ["<b>🎓 مقرراتي</b>"];
     for (const c of items.slice(0, 20)) {
-      const t = c.title || c.name || "—";
-      lines.push(`• <b>${escapeHtml(String(t))}</b>${c.teacherName ? ` — ${escapeHtml(c.teacherName)}` : ""}`);
+      lines.push(`• <b>${esc(String(c.title || c.name || "—"))}</b>`);
     }
     await sendMessage(chatId, lines.join("\n"));
   });
@@ -247,185 +248,132 @@ function registerCommands() {
     const tokens = await getTokens();
     const items = await fetchScope("schedule", tokens.accessToken);
     if (!Array.isArray(items) || !items.length) {
-      await sendMessage(chatId, "📭 ما في جدول الحين." + (items ? ` <code>${escapeHtml(JSON.stringify(items).slice(0, 300))}</code>` : ""));
+      await sendMessage(chatId, "🗓 ما في جدول الحين.");
       return;
     }
-    const lines = ["<b>🗓 الجدول الأسبوعي</b>"];
+    const lines = ["<b>🗓 الجدول</b>"];
     for (const s of items.slice(0, 20)) {
-      lines.push(`• <b>${escapeHtml(String(s.title || s.subjectName || "—"))}</b> <code>${escapeHtml(String(s.day ?? s.date ?? ""))}</code>`);
+      const t = s.title || s.subjectName || s.subject || "—";
+      const day = s.day || s.date || s.weekday || "";
+      lines.push(`• <b>${esc(String(t))}</b>${day ? ` — <code>${esc(String(day))}</code>` : ""}`);
     }
     await sendMessage(chatId, lines.join("\n"));
   });
 
-  // "show me everything" — the full platform snapshot in one command
+  // Announcements / notifications from the platform bell icon.
+  on("/list-notifications", async ({ chatId, args }) => {
+    if (!(await requireLogin(chatId))) return;
+    const tokens = await getTokens();
+    const items = await fetchScope("notifications", tokens.accessToken);
+    const onlyUnread = args[0] === "unread";
+    const rows = onlyUnread ? items.filter((n) => !n.read) : items;
+    await sendList(chatId, `🔔 الإشعارات${onlyUnread ? " — غير المقروءة" : ""}`, rows, formatNotification);
+  });
+
+  // ===== download =====
+  // /download <id> sends the file link for a material the bot has seen.
+  // The platform exposes fileUrl (S3) or externalUrl; the frontend modal uses
+  // exactly these to download/open, so we do the same.
+  on("/download", async ({ chatId, args }) => {
+    if (!(await requireLogin(chatId))) return;
+    const target = args[0];
+    if (!target) {
+      await sendMessage(
+        chatId,
+        "📥 <b>تحميل مادة</b>\n\nاكتب رقم المادة بعد الأمر.\nمثال: <code>/download 12</code>\n\nتقدر تجيب الأرقام من <code>/list-materials</code>"
+      );
+      return;
+    }
+    const tokens = await getTokens();
+    const materials = await fetchScope("materials", tokens.accessToken);
+    // accept "12" or "mat-12"
+    const needle = target.replace(/^mat-/, "");
+    const m = materials.find((x) => String(x.id).replace(/^mat-/, "") === needle);
+    if (!m) {
+      await sendMessage(chatId, `❌ ما لقيت مادة برقم <code>${esc(target)}</code>`);
+      return;
+    }
+    const link = m.fileUrl || m.externalUrl;
+    if (!link) {
+      await sendMessage(
+        chatId,
+        `📎 <b>${esc(m.title)}</b>\nالمادة ما عليها رابط ملف مباشر. افتحها من المنصة:\n${m.url}`
+      );
+      return;
+    }
+    const size = m.contentType ? `\n🗂 النوع: <code>${esc(m.contentType)}</code>` : "";
+    await sendMessage(
+      chatId,
+      `📥 <b>${esc(m.title)}</b>${size}\n\n🔗 <a href="${esc(link)}">اضغط لتحميل الملف</a>\n\n<i>الرابط قد ينتهي بعد فترة — لو ما فتح، جرّب مرة ثانية.</i>`
+    );
+  });
+
+  on("/unread", async ({ chatId }) => {
+    if (!(await requireLogin(chatId))) return;
+    const tokens = await getTokens();
+    const count = await getUnreadCount(tokens.accessToken);
+    const n = count?.count ?? count?.unreadCount ?? count;
+    await sendMessage(chatId, `🔔 عندك <b>${n ?? 0}</b> إشعار غير مقروء.\nجرّب <code>/list-notifications</code>`);
+  });
+
+  // "show me everything" — one snapshot of the whole platform.
   on("/all", async ({ chatId }) => {
     if (!(await requireLogin(chatId))) return;
     const tokens = await getTokens();
     const t = tokens.accessToken;
-    const parts = [];
     const scopes = [
       ["assignments", "📝 الواجبات", formatAssignment],
       ["materials", "📚 المواد", formatMaterial],
       ["exams", "📄 الاختبارات", formatExam],
       ["grades", "🏆 الدرجات", formatGrade],
+      ["notifications", "🔔 الإشعارات", formatNotification],
     ];
+    const parts = [];
     for (const [scope, label, fmt] of scopes) {
       try {
         const items = await fetchScope(scope, t);
-        parts.push(
-          items.length
-            ? formatList(label, items.slice(0, 6), fmt) + (items.length > 6 ? `\n<i>و ${items.length - 6} أخرى…</i>` : "")
-            : `${label}\n<i>فاضي</i>`
-        );
+        const shown = items.slice(0, 6);
+        const more = items.length > 6 ? `\n<i>و ${items.length - 6} أخرى…</i>` : "";
+        parts.push(items.length ? formatList(label, shown, fmt) + more : `${label}\n<i>فاضي</i>`);
       } catch (err) {
-        parts.push(`${label}\n<i>خطأ: ${escapeHtml(err.message)}</i>`);
+        parts.push(`${label}\n<i>خطأ: ${esc(err.message)}</i>`);
       }
     }
-    for (const chunk of chunkText(parts.join("\n\n"), 3900)) {
+    for (const chunk of chunkText(parts.join("\n\n"))) {
       await sendMessage(chatId, chunk);
     }
   });
 
   on("/help", async ({ chatId }) => {
-    await sendMessage(chatId, HELP_TEXT, { parseMode: "HTML" });
+    await sendMessage(chatId, HELP_TEXT);
   });
 }
 
 const HELP_TEXT = `<b>🤖 أوامر بوت طويق</b>
 
 <b>كل المنصة:</b>
-/all — كل شي في المنصة (واجبات + مواد + اختبارات + درجات)
+/all — كل شي في المنصة (واجبات + مواد + اختبارات + درجات + إشعارات)
 /dashboard — ملخص سريع من لوحة طويق
 
-<b>أوامر مخصصة لكل نطاق:</b>
-/list-assignments — كل الواجبات
-/list-assignments pending — غير مسلّمة بس
-/list-assignments graded — المصححة
-/list-assignments overdue — المتأخرة
+<b>أوامر لكل نطاق:</b>
+/list-assignments [pending|graded|overdue]
 /list-materials — كل المواد
 /list-exams — الاختبارات المتاحة
 /list-grades — كل الدرجات
 /list-courses — مقرراتي
-/list-schedule — الجدول الأسبوعي
+/list-schedule — الجدول
+/list-notifications — الإشعارات
+/unread — عدد الإشعارات غير المقروءة
+/download 12 — تحميل مادة برقمها
 /due — الواجبات المستحقة خلال ٢٤ ساعة
 
 <b>التحكم:</b>
-/status — حالة البوت والاتصال
+/status — حالة البوت
 /check — فحص فوري
-/watch assignments on — تشغيل مراقبة نطاق
-/watch exams off — إيقافها
-/interval 15 — تغيير دقيقية الفحص
+/watch assignments on|off — تشغيل/إيقاف مراقبة نطاق
+/interval 15 — تغيير دقيقة الفحص
 /seen — آخر ما رُصد
 /reset — مسح السجل
 /who — الحساب الحالي
 /logout — تسجيل الخروج
 /help — هذه القائمة`;
-
-function chunkText(text, max) {
-  if (text.length <= max) return [text];
-  const out = [];
-  let rest = text;
-  while (rest.length > max) {
-    let cut = rest.lastIndexOf("\n\n", max);
-    if (cut < max * 0.5) cut = rest.lastIndexOf("\n", max);
-    if (cut < 1) cut = max;
-    out.push(rest.slice(0, cut));
-    rest = rest.slice(cut).trimStart();
-  }
-  if (rest.length) out.push(rest);
-  return out;
-}
-
-function formatList(header, items, fmt) {
-  return [header, ...items.map(fmt)].join("\n");
-}
-
-function formatAssignment(a) {
-  const bits = [`📝 <b>${escapeHtml(a.title)}</b>`];
-  if (a.subject) bits.push(`   📚 ${escapeHtml(a.subject)}`);
-  if (a.dueAt) bits.push(`   ⏰ <code>${escapeHtml(String(a.dueAt))}</code>${a.isOverdue ? " 🔴 متأخر" : a.isDueSoon ? " 🟡 قريب" : ""}`);
-  if (a.status) bits.push(`   📊 ${escapeHtml(a.status)}`);
-  if (a.gradePoints != null && a.maxPoints != null) bits.push(`   🏆 ${a.gradePoints}/${a.maxPoints}`);
-  return bits.join("\n");
-}
-
-function formatMaterial(m) {
-  const bits = [`📚 <b>${escapeHtml(m.title)}</b>`];
-  if (m.subject) bits.push(`   📗 ${escapeHtml(m.subject)}`);
-  if (m.contentType) bits.push(`   📎 ${escapeHtml(m.contentType)}`);
-  if (m.createdAt) bits.push(`   📅 <code>${escapeHtml(String(m.createdAt))}</code>`);
-  return bits.join("\n");
-}
-
-function formatExam(e) {
-  const bits = [`📄 <b>${escapeHtml(e.title)}</b>`];
-  if (e.subject) bits.push(`   📚 ${escapeHtml(e.subject)}`);
-  if (e.startsAt) bits.push(`   ▶️ <code>${escapeHtml(String(e.startsAt))}</code>`);
-  if (e.endsAt) bits.push(`   ⏹ <code>${escapeHtml(String(e.endsAt))}</code>`);
-  if (e.durationMin) bits.push(`   ⏱ ${e.durationMin} دقيقة`);
-  if (e.status) bits.push(`   📊 ${escapeHtml(e.status)}`);
-  return bits.join("\n");
-}
-
-function formatGrade(g) {
-  const score = g.score != null ? `   🏆 <b>${g.score}${g.maxScore != null ? `/${g.maxScore}` : ""}</b>` : "";
-  return [`🏆 <b>${escapeHtml(g.title)}</b>`, g.subject ? `   📚 ${escapeHtml(g.subject)}` : "", score].filter(Boolean).join("\n");
-}
-
-function isWithin24h(iso) {
-  if (!iso) return false;
-  const d = new Date(iso).getTime();
-  return d > Date.now() && d < Date.now() + 24 * 60 * 60 * 1000;
-}
-
-async function mainWithRetry() {
-  // Supabase free tier can take a few seconds to wake from auto-pause, and
-  // fresh Render instances may hit transient routing errors. Boot the web
-  // server first so /health responds, then retry the DB-backed steps.
-  let storeOk = false;
-  for (let i = 1; i <= 5 && !storeOk; i++) {
-    try {
-      await initStore(process.env.DATABASE_URL);
-      storeOk = true;
-    } catch (err) {
-      console.error(`store init failed (attempt ${i}/5):`, err.message);
-      if (i === 5) {
-        console.error("giving up on the store; running in degraded mode");
-      } else {
-        await new Promise((r) => setTimeout(r, 5000 * i));
-      }
-    }
-  }
-
-  if (storeOk) {
-    if (process.env.TELEGRAM_BOT_TOKEN) {
-      setTelegramToken(process.env.TELEGRAM_BOT_TOKEN);
-      registerCommands();
-      startPolling();
-      console.log("telegram bot started");
-    } else {
-      console.warn("TELEGRAM_BOT_TOKEN missing — notifications disabled until set");
-    }
-
-    const creds = await getCredentials();
-    if (creds) {
-      startWatcher();
-      console.log("account linked — watcher resumed");
-    } else {
-      console.log("no account yet — waiting for login at /");
-    }
-  }
-
-  // Always start the web server so Render's health check has something to hit.
-  const app = createWebApp();
-  app.listen(PORT, () => console.log(`listening on :${PORT}`));
-
-  if (!process.env.TELEGRAM_CHAT_ID) {
-    console.warn("TELEGRAM_CHAT_ID missing — send /start to the bot and set it as env var");
-  }
-}
-
-mainWithRetry().catch((err) => {
-  console.error("fatal startup error:", err);
-  process.exit(1);
-});
