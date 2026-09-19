@@ -31,71 +31,22 @@ async function requireLogin(chatId) {
   return true;
 }
 
-// Grab a live snapshot of everything the AI may be asked about. Kept compact
-// so it fits in a cheap model's context: titles, subjects, dates, scores only.
-// Results are cached briefly — asking two questions in a row shouldn't
-// re-fetch the whole platform, and one slow scope shouldn't block the answer.
-let ctxCache = null;
-let ctxCacheAt = 0;
-const CTX_TTL_MS = 5 * 60 * 1000;
-
-async function buildAIContext(accessToken) {
-  const now = Date.now();
-  if (ctxCache && now - ctxCacheAt < CTX_TTL_MS) return ctxCache;
-
-  const scopes = ["assignments", "materials", "exams", "grades", "courses", "schedule"];
-  const out = {};
-  // Fetch in parallel, but never let one slow scope kill the whole answer.
-  await Promise.all(
-    scopes.map(async (s) => {
-      try {
-        const items = await Promise.race([
-          fetchScope(s, accessToken),
-          new Promise((_, rej) => setTimeout(() => rej(new Error("scope timeout")), 25000)),
-        ]);
-        out[s] = (items || []).slice(0, 25).map((i) => ({
-          title: i.title ?? null,
-          subject: i.subject ?? null,
-          status: i.status ?? null,
-          score: i.score ?? i.gradePoints ?? null,
-          maxScore: i.maxScore ?? i.maxPoints ?? null,
-          dueAt: i.dueAt ?? null,
-          date: i.date ?? null,
-          startTime: i.startTime ?? null,
-          room: i.room ?? null,
-          attendanceRate: i.attendanceRate ?? null,
-          pending: i.pendingAssignments ?? null,
-        }));
-      } catch (err) {
-        out[s] = { error: err.message };
-      }
-    })
-  );
-  ctxCache = out;
-  ctxCacheAt = now;
-  return out;
-}
-
-// Shared by /ai and the free-text handler: build context, ask, reply.
+// Shared by /ai and the free-text handler: hand the question to the
+// tool-calling agent. It pulls only the scopes it needs, so a simple
+// question is fast and a detailed one is thorough.
 async function answerWithAI(chatId, question) {
   if (!(await requireLogin(chatId))) return;
   if (!isAIEnabled()) {
     await sendMessage(
       chatId,
-      "🤖 الذكاء الاصطناعي ما هو مفعّل الحين.\n\nتقدر تستخدم الأوامر (جرّب /help).\nللتفعيل: <code>/ai setup</code>"
+      "🤖 الذكاء الاصطناعي ما هو مفعّل الحين.\n\nتقدر تستخدم الأوامر (جرّب /help)."
     );
     return;
   }
   const tokens = await getTokens();
-  await sendMessage(chatId, "🤖 دقيقة، أفحص بياناتك…").catch(() => {});
+  await sendMessage(chatId, "🤖 ثواني…").catch(() => {});
   try {
-    const ctx = await buildAIContext(tokens.accessToken);
-    // Retry once: transient provider timeouts are common on free tiers.
-    let res = await askAI(question, JSON.stringify(ctx));
-    if (!res.ok && /timeout|aborted|ETIMEDOUT/i.test(res.reply || "")) {
-      await sendMessage(chatId, "🔁 أعيد المحاولة…").catch(() => {});
-      res = await askAI(question, JSON.stringify(ctx));
-    }
+    const res = await askAI(question, { accessToken: tokens.accessToken });
     for (const chunk of chunkText(res.reply, 3800)) {
       await sendMessage(chatId, chunk);
     }
