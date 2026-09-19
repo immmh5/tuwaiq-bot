@@ -14,6 +14,8 @@ import {
   normalizeExams,
   normalizeGrades,
   normalizeNotifications,
+  normalizeSchedule,
+  normalizeCourses,
 } from "./tuwaiq.js";
 
 import * as auth from "./auth.js";
@@ -108,8 +110,10 @@ export async function fetchScope(scope, accessToken) {
     // assignments + exam attempts instead.
     grades: async (t) => await getMyGrades(t),
     notifications: async (t) => normalizeNotifications(await getNotifications(t)),
-    courses: async (t) => await getMyCourses(t),
-    schedule: async (t) => await getMySchedule(t),
+    // /subjectofferings/my-courses and /my-schedule return {courses} and
+    // {sessions} respectively (verified in the frontend bundles).
+    courses: async (t) => normalizeCourses(await getMyCourses(t)),
+    schedule: async (t) => normalizeSchedule(await getMySchedule(t)),
     home: async (t) => await getStudentHome(t),
   };
   const fn = fetchers[scope];

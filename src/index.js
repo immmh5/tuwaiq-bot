@@ -4,7 +4,7 @@ import { initStore, getKv, setKv, getCredentials, resetSeen, listSeen, getTokens
 import { createWebApp } from "./web.js";
 import { setTelegramToken, on, startPolling, sendMessage, escapeHtml } from "./telegram.js";
 import { runCheckOnce, getWatcherState, startWatcher, notifyOwner, fetchScope } from "./watcher.js";
-import { getMyAssignments, getStudentHome, getUnreadCount, normalizeAssignments } from "./tuwaiq.js";
+import { getMyAssignments, getStudentHome, getUnreadCount, getMyAttendance, normalizeAssignments } from "./tuwaiq.js";
 import {
   chunkText,
   formatList,
@@ -13,6 +13,8 @@ import {
   formatExam,
   formatGrade,
   formatNotification,
+  fmtDay,
+  fmtTime,
   escapeHtml as esc,
 } from "./format.js";
 
@@ -237,13 +239,20 @@ function registerCommands() {
       return;
     }
     const lines = ["<b>🎓 مقرراتي</b>"];
-    for (const c of items.slice(0, 20)) {
-      lines.push(`• <b>${esc(String(c.title || c.name || "—"))}</b>`);
+    for (const c of items.slice(0, 15)) {
+      const bits = [`📘 <b>${esc(String(c.title || "—"))}</b>`];
+      if (c.teacher) bits.push(`   👨‍🏫 ${esc(String(c.teacher))}`);
+      if (c.attendanceRate != null) bits.push(`   ✅ الحضور: ${c.attendanceRate}%`);
+      const pending = [c.pendingAssignments, c.dueSoonAssignments, c.openExams]
+        .filter((v) => v != null && v > 0);
+      if (pending.length) bits.push(`   📊 واجبات: ${c.pendingAssignments ?? 0} · مستحقة: ${c.dueSoonAssignments ?? 0} · اختبارات: ${c.openExams ?? 0}`);
+      if (c.finalGrade != null) bits.push(`   🏆 الدرجة النهائية: ${esc(String(c.finalGrade))}`);
+      lines.push(bits.join("\n"));
     }
-    await sendMessage(chatId, lines.join("\n"));
+    await sendMessage(chatId, lines.join("\n\n"));
   });
 
-  on("/schedule", async ({ chatId }) => {
+  on("/schedule", async ({ chatId, args }) => {
     if (!(await requireLogin(chatId))) return;
     const tokens = await getTokens();
     const items = await fetchScope("schedule", tokens.accessToken);
@@ -251,12 +260,44 @@ function registerCommands() {
       await sendMessage(chatId, "🗓 ما في جدول الحين.");
       return;
     }
-    const lines = ["<b>🗓 الجدول</b>"];
-    for (const s of items.slice(0, 20)) {
-      const t = s.title || s.subjectName || s.subject || "—";
-      const day = s.day || s.date || s.weekday || "";
-      lines.push(`• <b>${esc(String(t))}</b>${day ? ` — <code>${esc(String(day))}</code>` : ""}`);
+    // group by day so it reads like the platform's weekly grid
+    const byDay = new Map();
+    for (const s of items) {
+      const day = s.date ? String(s.date).slice(0, 10) : "—";
+      if (!byDay.has(day)) byDay.set(day, []);
+      byDay.get(day).push(s);
     }
+    const today = new Date().toISOString().slice(0, 10);
+    const days = [...byDay.keys()].sort();
+    const onlyToday = args[0] === "today";
+    const shown = onlyToday ? days.filter((d) => d === today) : days;
+    const lines = ["<b>🗓 الجدول الأسبوعي</b>"];
+    for (const day of shown) {
+      const isToday = day === today;
+      lines.push(`\n<b>${isToday ? "🔵 يومك الحين" : fmtDay(day)}</b>`);
+      for (const s of byDay.get(day).slice(0, 8)) {
+        const time = s.startTime ? fmtTime(s.startTime, s.endTime) : "";
+        const room = s.room ? ` · غرفة ${esc(String(s.room))}` : "";
+        const tag = s.status === "cancelled" ? " ❌ ملغاة" : "";
+        lines.push(`• ${esc(String(s.title))}${time ? ` — <code>${time}</code>` : ""}${room}${tag}`);
+      }
+    }
+    await sendMessage(chatId, lines.join("\n"));
+  });
+
+  on("/attendance", async ({ chatId }) => {
+    if (!(await requireLogin(chatId))) return;
+    const tokens = await getTokens();
+    const att = await getMyAttendance(tokens.accessToken);
+    const lines = ["<b>✅ الحضور</b>"];
+    const tryField = (label, v) => {
+      if (v != null) lines.push(`${label}: <b>${esc(String(v))}</b>`);
+    };
+    tryField("نسبة الحضور", att?.attendanceRate ?? att?.rate);
+    tryField("الحصص الحضورية", att?.attended ?? att?.present);
+    tryField("الغياب", att?.absences ?? att?.absent);
+    tryField("التأخير", att?.late);
+    if (lines.length === 1) lines.push("<i>ما في بيانات حضور مفصلة.</i>");
     await sendMessage(chatId, lines.join("\n"));
   });
 
@@ -347,6 +388,45 @@ function registerCommands() {
   on("/help", async ({ chatId }) => {
     await sendMessage(chatId, HELP_TEXT);
   });
+
+  // Today's classes at a glance — the most-used view for a student.
+  on("/today", async ({ chatId }) => {
+    if (!(await requireLogin(chatId))) return;
+    const tokens = await getTokens();
+    const items = await fetchScope("schedule", tokens.accessToken);
+    const today = new Date().toISOString().slice(0, 10);
+    const mine = items.filter((s) => String(s.date || "").slice(0, 10) === today);
+    if (!mine.length) {
+      await sendMessage(chatId, "🎉 ما في حصص اليوم — استمتع!");
+      return;
+    }
+    const lines = [`<b>📅 حصص اليوم (${fmtDay(today)})</b>`];
+    mine.sort((a, b) => String(a.startTime).localeCompare(String(b.startTime)));
+    for (const s of mine) {
+      const time = s.startTime ? fmtTime(s.startTime, s.endTime) : "—";
+      lines.push(`• ${esc(String(s.title))} — <code>${time}</code>${s.room ? ` · غرفة ${esc(String(s.room))}` : ""}`);
+    }
+    await sendMessage(chatId, lines.join("\n"));
+  });
+
+  // Raw JSON export for anything the structured commands don't cover yet.
+  on("/export", async ({ chatId, args }) => {
+    if (!(await requireLogin(chatId))) return;
+    const scope = args[0];
+    const valid = ["assignments", "materials", "exams", "grades", "courses", "schedule", "notifications"];
+    if (!valid.includes(scope)) {
+      await sendMessage(
+        chatId,
+        "📥 <b>تصدير JSON</b>\n\nالاستعمال: <code>/export &lt;نطاق&gt;</code>\n\nالنطاقات المتاحة:\n<code>" +
+          valid.join("</code> · <code>") +
+          "</code>"
+      );
+      return;
+    }
+    const tokens = await getTokens();
+    const items = await fetchScope(scope, tokens.accessToken);
+    await sendMessage(chatId, `<code>${esc(JSON.stringify(items, null, 1).slice(0, 3800))}</code>`);
+  });
 }
 
 const HELP_TEXT = `<b>🤖 أوامر بوت طويق</b>
@@ -360,11 +440,15 @@ const HELP_TEXT = `<b>🤖 أوامر بوت طويق</b>
 /materials — كل المواد
 /exams — الاختبارات المتاحة
 /grades — كل الدرجات
-/courses — مقرراتي
-/schedule — الجدول
+/courses — مقرراتي (مع الحضور والدرجات)
+/schedule — الجدول الأسبوعي
+/schedule today — حصص يوم محدد
+/today — حصص اليوم بس
+/attendance — نسبة الحضور
 /notifications — الإشعارات
 /unread — عدد الإشعارات غير المقروءة
 /download 12 — تحميل مادة برقمها
+/export grades — تصدير JSON لأي نطاق
 /due — الواجبات المستحقة خلال ٢٤ ساعة
 
 <b>التحكم:</b>

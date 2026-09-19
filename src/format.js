@@ -43,6 +43,22 @@ export function fmtDay(input) {
   return `${AR_DAYS[d.getDay()]} ${d.getDate()} ${AR_MONTHS[d.getMonth()]}`;
 }
 
+// "9:00 ص – 9:45 ص" for session start/end times (API sends "07:00:00").
+export function fmtTime(start, end) {
+  const f = (t) => {
+    if (!t) return null;
+    const [h, m] = String(t).split(":");
+    const hh = Number(h);
+    if (isNaN(hh)) return null;
+    const ap = hh >= 12 ? "م" : "ص";
+    const h12 = hh % 12 === 0 ? 12 : hh % 12;
+    return `${h12}:${m ?? "00"} ${ap}`;
+  };
+  const s = f(start);
+  if (!s) return "";
+  return end ? `${s} – ${f(end)}` : s;
+}
+
 // Relative time: "بعد ٣ ساعات", "منذ يومين", "الحين"
 export function fmtRelative(input) {
   if (!input) return "";

@@ -188,6 +188,27 @@ export const getUnreadCount = bind("getUnreadCount", _getUnreadCount);
 export const getCommunications = bind("getCommunications", _getCommunications);
 export const getCommunicationsUnread = bind("getCommunicationsUnread", _getCommunicationsUnread);
 
+// Live/online session support: the platform exposes a join link per session.
+export async function getSessionJoinLink(accessToken, sessionId) {
+  return fetchJson(
+    `${BASE}/subjectofferings/my-courses/sessions/${sessionId}/join-link`,
+    { headers: authHeaders(accessToken) }
+  );
+}
+
+// --- Attendance --------------------------------------------------------------
+// Student-facing attendance endpoints (verified from the frontend bundle).
+
+export async function getMyAttendance(accessToken) {
+  return fetchJson(`${BASE}/attendance/my-attendance`, { headers: authHeaders(accessToken) });
+}
+
+export async function getMyAttendanceSessions(accessToken) {
+  return fetchJson(`${BASE}/attendance/my-attendance/sessions`, {
+    headers: authHeaders(accessToken),
+  });
+}
+
 // --- Normalisation -----------------------------------------------------------
 // The API shapes differ slightly per resource; normalise to a flat list of items
 // the watcher can dedupe on. Keeps the rest of the app dumb about payload shapes.
@@ -281,10 +302,60 @@ export function normalizeNotifications(payload) {
   }));
 }
 
+// The schedule endpoint returns { sessions: [...] } (verified in
+// StudentSchedulePage: it maps u.data?.sessions). Each session carries
+// sessionDate + startTime + subjectName + room; the grid groups by day.
+export function normalizeSchedule(payload) {
+  const rows = payload?.sessions || payload?.items || payload?.data || payload || [];
+  return (Array.isArray(rows) ? rows : rows?.items || []).map((s) => ({
+    id: `sch-${s.id ?? s.sessionId}`,
+    kind: "schedule",
+    title: s.subjectName || s.subject || s.title || "حصة",
+    subject: s.subjectName || null,
+    teacher: s.teacherName || null,
+    date: s.sessionDate || s.date || null,
+    startTime: s.startTime || s.startsAt || null,
+    endTime: s.endTime || s.endsAt || null,
+    room: s.room || s.classroom || null,
+    isOnline: !!s.isOnline,
+    status: s.status || (s.isCancelled ? "cancelled" : null),
+    url: `https://sc.tuwaiq.edu.sa/student/schedule`,
+    raw: s,
+  }));
+}
+
 export const normalize = {
   assignments: normalizeAssignments,
   materials: normalizeMaterials,
   exams: normalizeExams,
   grades: normalizeGrades,
   notifications: normalizeNotifications,
+  schedule: normalizeSchedule,
+  courses: normalizeCourses,
 };
+
+// /subjectofferings/my-courses returns { courses: [...] } per the student
+// dashboard, each with subject metadata, teacher, attendance and workload.
+export function normalizeCourses(payload) {
+  const rows = payload?.courses || payload?.items || payload?.data || payload || [];
+  return (Array.isArray(rows) ? rows : rows?.items || []).map((c) => ({
+    id: `crs-${c.offeringId ?? c.id}`,
+    kind: "course",
+    title: c.subjectName || c.title || c.name || null,
+    code: c.subjectCode || null,
+    teacher: c.teacherName || null,
+    group: c.groupName || null,
+    term: c.termName || null,
+    attendanceRate: c.attendanceRate ?? null,
+    pendingAssignments: c.pendingAssignments ?? null,
+    dueSoonAssignments: c.dueSoonAssignments ?? null,
+    openExams: c.openExams ?? null,
+    finalGrade: c.finalGrade ?? null,
+    nextSessionId: c.nextSessionId ?? null,
+    nextSessionDate: c.nextSessionDate ?? null,
+    nextSessionStartTime: c.nextSessionStartTime ?? null,
+    nextSessionRoom: c.nextSessionRoom ?? null,
+    url: `https://sc.tuwaiq.edu.sa/student/courses`,
+    raw: c,
+  }));
+}
