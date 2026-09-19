@@ -197,7 +197,7 @@ function registerCommands() {
     await sendMessage(chatId, formatList(header, shown, fmt) + more);
   };
 
-  on("/list-assignments", async ({ chatId, args }) => {
+  on("/assignments", async ({ chatId, args }) => {
     if (!(await requireLogin(chatId))) return;
     const tokens = await getTokens();
     const items = await fetchScope("assignments", tokens.accessToken);
@@ -210,25 +210,25 @@ function registerCommands() {
     await sendList(chatId, `📝 الواجبات${label ? ` — ${label}` : ""}`, rows, formatAssignment);
   });
 
-  on("/list-materials", async ({ chatId }) => {
+  on("/materials", async ({ chatId }) => {
     if (!(await requireLogin(chatId))) return;
     const tokens = await getTokens();
     await sendList(chatId, "📚 المواد", await fetchScope("materials", tokens.accessToken), formatMaterial);
   });
 
-  on("/list-exams", async ({ chatId }) => {
+  on("/exams", async ({ chatId }) => {
     if (!(await requireLogin(chatId))) return;
     const tokens = await getTokens();
     await sendList(chatId, "📄 الاختبارات المتاحة", await fetchScope("exams", tokens.accessToken), formatExam);
   });
 
-  on("/list-grades", async ({ chatId }) => {
+  on("/grades", async ({ chatId }) => {
     if (!(await requireLogin(chatId))) return;
     const tokens = await getTokens();
     await sendList(chatId, "🏆 الدرجات", await fetchScope("grades", tokens.accessToken), formatGrade);
   });
 
-  on("/list-courses", async ({ chatId }) => {
+  on("/courses", async ({ chatId }) => {
     if (!(await requireLogin(chatId))) return;
     const tokens = await getTokens();
     const items = await fetchScope("courses", tokens.accessToken);
@@ -243,7 +243,7 @@ function registerCommands() {
     await sendMessage(chatId, lines.join("\n"));
   });
 
-  on("/list-schedule", async ({ chatId }) => {
+  on("/schedule", async ({ chatId }) => {
     if (!(await requireLogin(chatId))) return;
     const tokens = await getTokens();
     const items = await fetchScope("schedule", tokens.accessToken);
@@ -261,7 +261,7 @@ function registerCommands() {
   });
 
   // Announcements / notifications from the platform bell icon.
-  on("/list-notifications", async ({ chatId, args }) => {
+  on("/notifications", async ({ chatId, args }) => {
     if (!(await requireLogin(chatId))) return;
     const tokens = await getTokens();
     const items = await fetchScope("notifications", tokens.accessToken);
@@ -280,7 +280,7 @@ function registerCommands() {
     if (!target) {
       await sendMessage(
         chatId,
-        "📥 <b>تحميل مادة</b>\n\nاكتب رقم المادة بعد الأمر.\nمثال: <code>/download 12</code>\n\nتقدر تجيب الأرقام من <code>/list-materials</code>"
+        "📥 <b>تحميل مادة</b>\n\nاكتب رقم المادة بعد الأمر.\nمثال: <code>/download 12</code>\n\nتقدر تجيب الأرقام من <code>/materials</code>"
       );
       return;
     }
@@ -313,7 +313,7 @@ function registerCommands() {
     const tokens = await getTokens();
     const count = await getUnreadCount(tokens.accessToken);
     const n = count?.count ?? count?.unreadCount ?? count;
-    await sendMessage(chatId, `🔔 عندك <b>${n ?? 0}</b> إشعار غير مقروء.\nجرّب <code>/list-notifications</code>`);
+    await sendMessage(chatId, `🔔 عندك <b>${n ?? 0}</b> إشعار غير مقروء.\nجرّب <code>/notifications</code>`);
   });
 
   // "show me everything" — one snapshot of the whole platform.
@@ -356,13 +356,13 @@ const HELP_TEXT = `<b>🤖 أوامر بوت طويق</b>
 /dashboard — ملخص سريع من لوحة طويق
 
 <b>أوامر لكل نطاق:</b>
-/list-assignments [pending|graded|overdue]
-/list-materials — كل المواد
-/list-exams — الاختبارات المتاحة
-/list-grades — كل الدرجات
-/list-courses — مقرراتي
-/list-schedule — الجدول
-/list-notifications — الإشعارات
+/assignments [pending / graded / overdue] — الواجبات
+/materials — كل المواد
+/exams — الاختبارات المتاحة
+/grades — كل الدرجات
+/courses — مقرراتي
+/schedule — الجدول
+/notifications — الإشعارات
 /unread — عدد الإشعارات غير المقروءة
 /download 12 — تحميل مادة برقمها
 /due — الواجبات المستحقة خلال ٢٤ ساعة
@@ -377,3 +377,52 @@ const HELP_TEXT = `<b>🤖 أوامر بوت طويق</b>
 /who — الحساب الحالي
 /logout — تسجيل الخروج
 /help — هذه القائمة`;
+
+// --- boot ---------------------------------------------------------------------
+// Supabase free tier can take a few seconds to wake from auto-pause, and fresh
+// Render instances hit transient routing errors. Retry the DB-backed steps and
+// always start the web server so Render's health check has something to hit.
+async function mainWithRetry() {
+  let storeOk = false;
+  for (let i = 1; i <= 5 && !storeOk; i++) {
+    try {
+      await initStore(process.env.DATABASE_URL);
+      storeOk = true;
+    } catch (err) {
+      console.error(`store init failed (attempt ${i}/5):`, err.message);
+      if (i === 5) console.error("giving up on the store; running in degraded mode");
+      else await new Promise((r) => setTimeout(r, 5000 * i));
+    }
+  }
+
+  if (storeOk) {
+    if (process.env.TELEGRAM_BOT_TOKEN) {
+      setTelegramToken(process.env.TELEGRAM_BOT_TOKEN);
+      registerCommands();
+      startPolling();
+      console.log("telegram bot started");
+    } else {
+      console.warn("TELEGRAM_BOT_TOKEN missing — notifications disabled until set");
+    }
+
+    const creds = await getCredentials();
+    if (creds) {
+      startWatcher();
+      console.log("account linked — watcher resumed");
+    } else {
+      console.log("no account yet — waiting for login at /");
+    }
+  }
+
+  const app = createWebApp();
+  app.listen(PORT, () => console.log(`listening on :${PORT}`));
+
+  if (!process.env.TELEGRAM_CHAT_ID) {
+    console.warn("TELEGRAM_CHAT_ID missing — send /start to the bot and set it as env var");
+  }
+}
+
+mainWithRetry().catch((err) => {
+  console.error("fatal startup error:", err);
+  process.exit(1);
+});
