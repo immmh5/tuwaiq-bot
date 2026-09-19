@@ -16,6 +16,7 @@ import {
   renderAssignmentsImage,
   renderGradesImage,
 } from "./images.js";
+import { captureScope } from "./html-shot.js";
 
 // Tool definitions as presented to the model (OpenAI function format).
 export const TOOL_SPECS = [
@@ -135,6 +136,24 @@ export const TOOL_SPECS = [
       parameters: { type: "object", properties: {}, required: [] },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "capture_page",
+      description: "التقط صورة لصفحة من المنصة (schedule/assignments/grades/materials/exams/attendance/courses). خيار احتياطي لما يريد لقطة حقيقية من الموقع.",
+      parameters: {
+        type: "object",
+        properties: {
+          scope: {
+            type: "string",
+            enum: ["schedule", "assignments", "grades", "materials", "exams", "attendance", "courses"],
+            description: "أي صفحة تلتقط. افتراضي: schedule",
+          },
+        },
+        required: [],
+      },
+    },
+  },
 ];
 
 const isoDay = (d) => d.toISOString().slice(0, 10);
@@ -232,6 +251,14 @@ export async function runTool(name, args, accessToken) {
       if (!items.length) return { error: "no grades" };
       const { png, caption } = await renderGradesImage(items);
       return { __photo: png, __caption: caption, count: items.length };
+    }
+    // Raw capture of a platform page. Uses a real browser when one is
+    // available (local/dev), otherwise the SVG renderer. This is the
+    // "screenshot the HTML" capability the student asked for.
+    case "capture_page": {
+      const data = (await fetchScope(a.scope || "schedule", accessToken)) || [];
+      const { png, caption, method } = await captureScope(a.scope || "schedule", data);
+      return { __photo: png, __caption: caption, method, count: data.length };
     }
     default:
       return { error: `unknown tool: ${name}` };

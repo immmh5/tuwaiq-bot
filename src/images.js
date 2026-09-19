@@ -102,17 +102,49 @@ function header(title, subtitle) {
 }
 
 // ---- Schedule image ---------------------------------------------------------
-// One section per day, rows of time/subject/room, like the platform grid.
-export async function renderScheduleImage(sessions) {
-  const byDay = new Map();
+// The platform renders both halves of a substitution: the cancelled original
+// AND its replacement share a slot (same day + start time), and the original
+// is drawn pale. Drawing every row verbatim produced the "repeated classes"
+// the student saw. So sessions are grouped by slot; when a slot holds a
+// cancelled session next to a live one, they are merged into a single card
+// that shows the live subject with the cancelled one as a pale "استبدلت".
+function groupSlots(sessions) {
+  const bySlot = new Map();
   for (const s of sessions) {
     const day = String(s.date || "").slice(0, 10);
-    if (!byDay.has(day)) byDay.set(day, []);
-    byDay.get(day).push(s);
+    const slot = `${day}|${s.startTime || ""}`;
+    if (!bySlot.has(slot)) bySlot.set(slot, { day, start: s.startTime, items: [] });
+    bySlot.get(slot).items.push(s);
   }
-  const days = [...byDay.keys()].sort();
+  return [...bySlot.values()].sort((a, b) => {
+    if (a.day !== b.day) return a.day < b.day ? -1 : 1;
+    return String(a.start).localeCompare(String(b.start));
+  });
+}
+
+export async function renderScheduleImage(sessions) {
+  const slots = groupSlots(sessions);
   const today = new Date().toISOString().slice(0, 10);
 
+  // Collapse into per-day sections of resolved cards.
+  const byDay = new Map();
+  for (const slot of slots) {
+    if (!byDay.has(slot.day)) byDay.set(slot.day, []);
+    const live = slot.items.filter((s) => s.status !== "cancelled");
+    const cancelled = slot.items.filter((s) => s.status === "cancelled");
+    if (live.length) {
+      // Substitution: show the replacement, note what it replaced.
+      byDay.get(slot.day).push({
+        ...live[0],
+        replacedBy: cancelled.length ? cancelled[0].title : null,
+      });
+    } else {
+      // Genuinely cancelled with no replacement.
+      for (const c of cancelled) byDay.get(slot.day).push({ ...c, replacedBy: null });
+    }
+  }
+
+  const days = [...byDay.keys()].sort();
   const rows = [];
   let y = 140;
   const PAD = 32;
@@ -120,46 +152,56 @@ export async function renderScheduleImage(sessions) {
 
   for (const day of days) {
     const isToday = day === today;
-    const list = byDay
-      .get(day)
-      .slice()
-      .sort((a, b) => String(a.startTime).localeCompare(String(b.startTime)));
+    const list = byDay.get(day);
+    const activeCount = list.filter((s) => s.status !== "cancelled").length;
 
-    // Day banner
     rows.push(`
     <rect x="${PAD}" y="${y}" width="${W}" height="52" rx="12" fill="${isToday ? C.accent : C.card}" opacity="${isToday ? 0.18 : 1}"/>
     <text x="${PAD + 20}" y="${y + 35}" font-family="${ARABIC_FONT}" font-size="24" font-weight="700"
           fill="${isToday ? C.accent : C.text}" direction="rtl">${esc(fmtDayName(day))}${isToday ? "  • اليوم" : ""}</text>
     <text x="${PAD + W - 20}" y="${y + 35}" font-family="${ARABIC_FONT}" font-size="20"
-          fill="${C.sub}" text-anchor="end" direction="rtl">${list.length} حصة</text>`);
+          fill="${C.sub}" text-anchor="end" direction="rtl">${activeCount} حصة</text>`);
     y += 64;
 
     for (const s of list) {
       const cancelled = s.status === "cancelled";
       const time = fmtClock(s.startTime);
       const room = s.room ? `غرفة ${s.room}` : "—";
+      const accent = cancelled ? C.bad : C.good;
+      const h = s.replacedBy ? 84 : 56;
+
       rows.push(`
-      <rect x="${PAD}" y="${y}" width="${W}" height="56" rx="10" fill="${C.cardAlt}"/>
-      <rect x="${PAD}" y="${y}" width="6" height="56" rx="3" fill="${cancelled ? C.bad : C.good}"/>
-      <text x="${PAD + 22}" y="${y + 35}" font-family="${ARABIC_FONT}" font-size="22"
-            fill="${cancelled ? C.bad : C.text}" direction="rtl">${esc(s.title)}</text>
-      <text x="${PAD + W - 290}" y="${y + 35}" font-family="${ARABIC_FONT}" font-size="19"
+      <rect x="${PAD}" y="${y}" width="${W}" height="${h}" rx="10" fill="${C.cardAlt}"/>
+      <rect x="${PAD}" y="${y}" width="6" height="${h}" rx="3" fill="${accent}"/>
+      <text x="${PAD + 22}" y="${y + 33}" font-family="${ARABIC_FONT}" font-size="22" font-weight="600"
+            fill="${C.text}" direction="rtl">${esc(s.title)}</text>
+      <text x="${PAD + W - 290}" y="${y + 33}" font-family="${ARABIC_FONT}" font-size="19"
             fill="${C.sub}" text-anchor="end" direction="rtl">${esc(room)}</text>
-      <text x="${PAD + W - 22}" y="${y + 35}" font-family="${ARABIC_FONT}" font-size="19"
+      <text x="${PAD + W - 22}" y="${y + 33}" font-family="${ARABIC_FONT}" font-size="19"
             fill="${C.sub}" text-anchor="end" direction="rtl">${esc(time)}</text>`);
-      y += 66;
+      if (s.replacedBy) {
+        rows.push(`
+        <text x="${PAD + 22}" y="${y + 66}" font-family="${ARABIC_FONT}" font-size="17"
+              fill="${C.warn}" direction="rtl">↩ استُبدلت بـ: ${esc(s.replacedBy)}</text>`);
+      } else if (cancelled) {
+        rows.push(`
+        <text x="${PAD + 22}" y="${y + 33}" font-family="${ARABIC_FONT}" font-size="17"
+              fill="${C.bad}" direction="rtl">ملغاة</text>`);
+      }
+      y += h + 10;
     }
     y += 12;
   }
 
+  const liveCount = slots.reduce((n, s) => n + (s.items.some((x) => x.status !== "cancelled") ? 1 : 0), 0);
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="${y}" direction="rtl">
     <rect width="1000" height="${y}" fill="${C.bg}"/>
-    ${header("🗓 الجدول الأسبوعي", `${sessions.length} حصة في ${days.length} أيام`)}
+    ${header("🗓 الجدول الأسبوعي", `${liveCount} حصة فعلية في ${days.length} أيام`)}
     ${rows.join("")}
   </svg>`;
   return {
     png: await toPng(svg),
-    caption: `🗓 جدولك الأسبوعي — ${sessions.length} حصة`,
+    caption: `🗓 جدولك الأسبوعي — ${liveCount} حصة`,
   };
 }
 
