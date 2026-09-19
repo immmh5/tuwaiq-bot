@@ -117,9 +117,23 @@ function handleMessage(update) {
     Promise.resolve(fn({ chatId, args, text, raw: msg })).catch((err) => {
       sendMessage(chatId, `⚠️ خطأ: <code>${escapeHtml(err.message)}</code>`).catch(() => {});
     });
-  } else if (key === "/start" || key === "/help") {
+  } else if (key === "/start") {
     printHelp(chatId);
+  } else if (key.startsWith("/")) {
+    sendMessage(
+      chatId,
+      `❓ أمر ما أعرفه: <code>${escapeHtml(key)}</code>\nجرّب <code>/help</code> لقائمة كل الأوامر.`
+    ).catch(() => {});
+  } else {
+    // Free text → the AI layer (if enabled). Keeps the command UX untouched.
+    aiHandler?.({ chatId, text }).catch(() => {});
   }
+}
+
+// Registered by index.js when the AI module is wired up.
+export let aiHandler = null;
+export function setAIHandler(fn) {
+  aiHandler = fn;
 }
 
 function printHelp(chatId) {

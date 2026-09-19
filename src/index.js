@@ -17,6 +17,8 @@ import {
   fmtTime,
   escapeHtml as esc,
 } from "./format.js";
+import { askAI, aiConfig, isAIEnabled } from "./ai.js";
+import { setAIHandler } from "./telegram.js";
 
 const PORT = process.env.PORT || 3000;
 
@@ -27,6 +29,59 @@ async function requireLogin(chatId) {
     return false;
   }
   return true;
+}
+
+// Grab a live snapshot of everything the AI may be asked about. Kept compact
+// so it fits in a cheap model's context: titles, subjects, dates, scores only.
+async function buildAIContext(accessToken) {
+  const scopes = ["assignments", "materials", "exams", "grades", "courses", "schedule"];
+  const out = {};
+  await Promise.all(
+    scopes.map(async (s) => {
+      try {
+        const items = await fetchScope(s, accessToken);
+        out[s] = (items || []).slice(0, 25).map((i) => ({
+          title: i.title ?? null,
+          subject: i.subject ?? null,
+          status: i.status ?? null,
+          score: i.score ?? i.gradePoints ?? null,
+          maxScore: i.maxScore ?? i.maxPoints ?? null,
+          dueAt: i.dueAt ?? null,
+          date: i.date ?? null,
+          startTime: i.startTime ?? null,
+          room: i.room ?? null,
+          attendanceRate: i.attendanceRate ?? null,
+          pending: i.pendingAssignments ?? null,
+        }));
+      } catch (err) {
+        out[s] = { error: err.message };
+      }
+    })
+  );
+  return out;
+}
+
+// Shared by /ai and the free-text handler: build context, ask, reply.
+async function answerWithAI(chatId, question) {
+  if (!(await requireLogin(chatId))) return;
+  if (!isAIEnabled()) {
+    await sendMessage(
+      chatId,
+      "🤖 الذكاء الاصطناعي ما هو مفعّل الحين.\n\nتقدر تستخدم الأوامر (جرّب /help).\nللتفعيل: <code>/ai setup</code>"
+    );
+    return;
+  }
+  const tokens = await getTokens();
+  await sendMessage(chatId, "🤖 دقيقة، أفحص بياناتك…").catch(() => {});
+  try {
+    const ctx = await buildAIContext(tokens.accessToken);
+    const res = await askAI(question, JSON.stringify(ctx));
+    for (const chunk of chunkText(res.reply, 3800)) {
+      await sendMessage(chatId, chunk);
+    }
+  } catch (err) {
+    await sendMessage(chatId, `⚠️ ما قدرت أجاوب: <code>${esc(err.message)}</code>`);
+  }
 }
 
 // main() is retained for reference; mainWithRetry below is what actually boots.
@@ -290,14 +345,30 @@ function registerCommands() {
     const tokens = await getTokens();
     const att = await getMyAttendance(tokens.accessToken);
     const lines = ["<b>✅ الحضور</b>"];
+    // /attendance/my-attendance may be a summary object or a list per course.
     const tryField = (label, v) => {
-      if (v != null) lines.push(`${label}: <b>${esc(String(v))}</b>`);
+      if (v != null && v !== "") lines.push(`${label}: <b>${esc(String(v))}</b>`);
     };
-    tryField("نسبة الحضور", att?.attendanceRate ?? att?.rate);
-    tryField("الحصص الحضورية", att?.attended ?? att?.present);
-    tryField("الغياب", att?.absences ?? att?.absent);
-    tryField("التأخير", att?.late);
-    if (lines.length === 1) lines.push("<i>ما في بيانات حضور مفصلة.</i>");
+    if (Array.isArray(att)) {
+      for (const c of att.slice(0, 10)) {
+        lines.push(
+          `📘 <b>${esc(String(c.subjectName || c.offeringTitle || "مادة"))}</b> — ${esc(String(c.attendanceRate ?? c.percentage ?? "—"))}%`
+        );
+      }
+    } else if (att && typeof att === "object") {
+      tryField("نسبة الحضور", att.attendanceRate ?? att.rate ?? att.percentage);
+      tryField("الحصص الحضورية", att.attended ?? att.present ?? att.totalPresent);
+      tryField("الغياب", att.absences ?? att.absent ?? att.totalAbsent);
+      tryField("التأخير", att.late ?? att.lateArrivals);
+      tryField("الإجمالي", att.totalSessions ?? att.total);
+      if (lines.length === 1) {
+        // Unknown shape — show the keys so we can adapt in the next iteration.
+        lines.push(`<i>ما في بيانات واضحة. المفاتيح:</i>`);
+        lines.push(`<code>${esc(JSON.stringify(Object.keys(att)).slice(0, 300))}</code>`);
+      }
+    } else {
+      lines.push("<i>ما في بيانات حضور الحين.</i>");
+    }
     await sendMessage(chatId, lines.join("\n"));
   });
 
@@ -318,20 +389,29 @@ function registerCommands() {
   on("/download", async ({ chatId, args }) => {
     if (!(await requireLogin(chatId))) return;
     const target = args[0];
-    if (!target) {
-      await sendMessage(
-        chatId,
-        "📥 <b>تحميل مادة</b>\n\nاكتب رقم المادة بعد الأمر.\nمثال: <code>/download 12</code>\n\nتقدر تجيب الأرقام من <code>/materials</code>"
-      );
-      return;
-    }
     const tokens = await getTokens();
     const materials = await fetchScope("materials", tokens.accessToken);
-    // accept "12" or "mat-12"
-    const needle = target.replace(/^mat-/, "");
-    const m = materials.find((x) => String(x.id).replace(/^mat-/, "") === needle);
+    if (!target) {
+      // Show an inline picker so the user doesn't have to remember ids.
+      const lines = ["📥 <b>تحميل مادة</b>", "", "اختر برقم من القائمة:"];
+      materials.slice(0, 15).forEach((m, i) => {
+        lines.push(`<code>${i + 1}</code> — ${esc(String(m.title).slice(0, 45))}`);
+      });
+      lines.push("", `<i>اكتب: <code>/download 3</code></i>`);
+      await sendMessage(chatId, lines.join("\n"));
+      return;
+    }
+    const n = Number(target);
+    // accept either the list position (1..N) or the raw id ("mat-221"/"221").
+    let m;
+    if (Number.isInteger(n) && n >= 1 && n <= materials.length) {
+      m = materials[n - 1];
+    } else {
+      const needle = String(target).replace(/^mat-/, "");
+      m = materials.find((x) => String(x.id).replace(/^mat-/, "") === needle);
+    }
     if (!m) {
-      await sendMessage(chatId, `❌ ما لقيت مادة برقم <code>${esc(target)}</code>`);
+      await sendMessage(chatId, `❌ ما لقيت مادة برقم <code>${esc(target)}</code>\nجرّب <code>/download</code> لحالة القائمة`);
       return;
     }
     const link = m.fileUrl || m.externalUrl;
@@ -387,6 +467,25 @@ function registerCommands() {
 
   on("/help", async ({ chatId }) => {
     await sendMessage(chatId, HELP_TEXT);
+  });
+
+  // ===== AI: free-text chat =====
+  // Any message that isn't a command is treated as a question for the AI.
+  // It answers using a live snapshot of the platform as context.
+  on("/ai", async ({ chatId, args, text }) => {
+    const q = args.join(" ").trim();
+    if (!q) {
+      const cfg = aiConfig();
+      await sendMessage(
+        chatId,
+        `<b>🤖 الذكاء الاصطناعي</b>\n\nالحالة: <b>${cfg.enabled ? "✅ مفعّل" : "❌ غير مفعّل"}</b>\nالنموذج: <code>${esc(cfg.model)}</code>\n\n` +
+          (cfg.enabled
+            ? "اكتب أي سؤال بدون '/' وأرد عليك:\n<i>«وش عندي واجبات هالأسبوع؟»</i>"
+            : "للتفعيل، اضبط <code>OPENAI_API_KEY</code> (أو <code>AI_API_KEY</code>) في إعدادات الخدمة.\nتقدر تستخدم OpenAI، أو أي خدمة متوافقة (DeepSeek، Groq، غيرها) عبر <code>AI_BASE_URL</code>.")
+      );
+      return;
+    }
+    await answerWithAI(chatId, q);
   });
 
   // Today's classes at a glance — the most-used view for a student.
@@ -451,6 +550,10 @@ const HELP_TEXT = `<b>🤖 أوامر بوت طويق</b>
 /export grades — تصدير JSON لأي نطاق
 /due — الواجبات المستحقة خلال ٢٤ ساعة
 
+<b>الذكاء الاصطناعي:</b>
+/ai — حالة الذكاء وإعداداته
+أي كلام بدون / — اسأله أي شي عن منصتك!
+
 <b>التحكم:</b>
 /status — حالة البوت
 /check — فحص فوري
@@ -483,6 +586,10 @@ async function mainWithRetry() {
     if (process.env.TELEGRAM_BOT_TOKEN) {
       setTelegramToken(process.env.TELEGRAM_BOT_TOKEN);
       registerCommands();
+      // Route free-text messages (no "/") to the AI layer.
+      setAIHandler(async ({ chatId, text }) => {
+        await answerWithAI(chatId, text);
+      });
       startPolling();
       console.log("telegram bot started");
     } else {
