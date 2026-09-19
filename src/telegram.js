@@ -41,14 +41,30 @@ export async function startPolling() {
   polling = true;
   // Drop pending updates from previous runs
   offset = 0;
+  let conflicts = 0;
   while (polling) {
     try {
       const updates = await getUpdates(offset, 60);
+      conflicts = 0;
       for (const u of updates) {
         offset = u.update_id + 1;
         handleMessage(u);
       }
     } catch (err) {
+      // Two pollers on the same token fight forever. Back off progressively so
+      // the losing instance doesn't hammer the API; after repeated 409s it
+      // stops polling entirely and the surviving instance takes over cleanly.
+      if (/409|Conflict/.test(err.message)) {
+        conflicts++;
+        console.error(`telegram poll conflict (${conflicts}) — another instance may be running`);
+        if (conflicts >= 6) {
+          console.error("too many poll conflicts; this instance stops polling");
+          polling = false;
+          return;
+        }
+        await sleep(5000 * conflicts);
+        continue;
+      }
       console.error("telegram poll error:", err.message);
       await sleep(5000);
     }
