@@ -56,7 +56,10 @@ export async function askAI(userQuestion, contextJson, opts = {}) {
     ],
     temperature: 0.4,
     max_tokens: opts.maxTokens || 1200,
+    stream: false,
   };
+  // Long enough for a reasoning-capable model; the timeout fires when the
+  // provider is genuinely stuck rather than merely being slow.
   const res = await fetch(`${cfg.baseURL}/chat/completions`, {
     method: "POST",
     headers: {
@@ -64,11 +67,11 @@ export async function askAI(userQuestion, contextJson, opts = {}) {
       Authorization: `Bearer ${cfg.apiKey}`,
     },
     body: JSON.stringify(body),
-    signal: opts.signal ?? AbortSignal.timeout(30000),
+    signal: opts.signal ?? AbortSignal.timeout(120000),
   });
   if (!res.ok) {
     const text = await res.text().catch(() => "");
-    return { ok: false, reply: `⚠️ الذكاء الاصطناعي ردّ بخطأ (${res.status}): ${text.slice(0, 150)}` };
+    return { ok: false, reply: `⚠️ الذكاء الاصطناعي ردّ بخطأ (${res.status}): ${text.slice(0, 200)}` };
   }
   const data = await res.json();
   const reply = data?.choices?.[0]?.message?.content?.trim();

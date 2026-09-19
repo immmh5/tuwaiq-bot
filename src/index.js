@@ -33,13 +33,26 @@ async function requireLogin(chatId) {
 
 // Grab a live snapshot of everything the AI may be asked about. Kept compact
 // so it fits in a cheap model's context: titles, subjects, dates, scores only.
+// Results are cached briefly — asking two questions in a row shouldn't
+// re-fetch the whole platform, and one slow scope shouldn't block the answer.
+let ctxCache = null;
+let ctxCacheAt = 0;
+const CTX_TTL_MS = 5 * 60 * 1000;
+
 async function buildAIContext(accessToken) {
+  const now = Date.now();
+  if (ctxCache && now - ctxCacheAt < CTX_TTL_MS) return ctxCache;
+
   const scopes = ["assignments", "materials", "exams", "grades", "courses", "schedule"];
   const out = {};
+  // Fetch in parallel, but never let one slow scope kill the whole answer.
   await Promise.all(
     scopes.map(async (s) => {
       try {
-        const items = await fetchScope(s, accessToken);
+        const items = await Promise.race([
+          fetchScope(s, accessToken),
+          new Promise((_, rej) => setTimeout(() => rej(new Error("scope timeout")), 25000)),
+        ]);
         out[s] = (items || []).slice(0, 25).map((i) => ({
           title: i.title ?? null,
           subject: i.subject ?? null,
@@ -58,6 +71,8 @@ async function buildAIContext(accessToken) {
       }
     })
   );
+  ctxCache = out;
+  ctxCacheAt = now;
   return out;
 }
 
@@ -75,7 +90,12 @@ async function answerWithAI(chatId, question) {
   await sendMessage(chatId, "🤖 دقيقة، أفحص بياناتك…").catch(() => {});
   try {
     const ctx = await buildAIContext(tokens.accessToken);
-    const res = await askAI(question, JSON.stringify(ctx));
+    // Retry once: transient provider timeouts are common on free tiers.
+    let res = await askAI(question, JSON.stringify(ctx));
+    if (!res.ok && /timeout|aborted|ETIMEDOUT/i.test(res.reply || "")) {
+      await sendMessage(chatId, "🔁 أعيد المحاولة…").catch(() => {});
+      res = await askAI(question, JSON.stringify(ctx));
+    }
     for (const chunk of chunkText(res.reply, 3800)) {
       await sendMessage(chatId, chunk);
     }
