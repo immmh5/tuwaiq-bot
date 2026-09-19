@@ -11,6 +11,11 @@
 
 import { fetchScope } from "./watcher.js";
 import { getMyAttendance, getSessionJoinLink } from "./tuwaiq.js";
+import {
+  renderScheduleImage,
+  renderAssignmentsImage,
+  renderGradesImage,
+} from "./images.js";
 
 // Tool definitions as presented to the model (OpenAI function format).
 export const TOOL_SPECS = [
@@ -106,9 +111,42 @@ export const TOOL_SPECS = [
       parameters: { type: "object", properties: {}, required: [] },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "send_schedule_image",
+      description: "أرسل الجدول الأسبوعي كصورة مرتبة للطالب. استخدمها لما يطلب الجدول كصورة.",
+      parameters: { type: "object", properties: {}, required: [] },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "send_assignments_image",
+      description: "أرسل الواجبات كصورة مرتبة (المعلّقة، المصحّحة، المُسلَّمة). استخدمها لما يطلب الواجبات كصورة.",
+      parameters: { type: "object", properties: {}, required: [] },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "send_grades_image",
+      description: "أرسل الدرجات كصورة مع نسب مئوية وألوان. استخدمها لما يطلب الدرجات كصورة.",
+      parameters: { type: "object", properties: {}, required: [] },
+    },
+  },
 ];
 
 const isoDay = (d) => d.toISOString().slice(0, 10);
+
+// The platform sends statuses capitalised ("Pending", "Submitted", "Graded").
+// Tool args arrive lowercase, so compare case-insensitively — otherwise a
+// filter silently matches nothing and the AI wrongly reports "no assignments".
+const norm = (v) => String(v || "").trim().toLowerCase();
+
+// True when a not-yet-submitted assignment is past its due date.
+const isOverdue = (x) =>
+  norm(x.status) === "pending" && !!x.dueAt && new Date(x.dueAt).getTime() < Date.now();
 
 // Execute one tool call against the live platform.
 export async function runTool(name, args, accessToken) {
@@ -117,13 +155,18 @@ export async function runTool(name, args, accessToken) {
     case "list_assignments": {
       const items = (await fetchScope("assignments", accessToken)) || [];
       let rows = items;
-      if (a.status && a.status !== "all") rows = rows.filter((x) => x.status === a.status);
-      if (a.subject) rows = rows.filter((x) => (x.subject || "").includes(a.subject));
+      if (a.status && norm(a.status) !== "all") {
+        const want = norm(a.status);
+        if (want === "overdue") rows = rows.filter(isOverdue);
+        else rows = rows.filter((x) => norm(x.status) === want);
+      }
+      if (a.subject) rows = rows.filter((x) => norm(x.subject).includes(norm(a.subject)));
       return rows.map((x) => ({
         id: x.id,
         title: x.title,
         subject: x.subject,
         status: x.status,
+        overdue: isOverdue(x),
         dueAt: x.dueAt,
         score: x.score,
         maxScore: x.maxScore,
@@ -171,6 +214,24 @@ export async function runTool(name, args, accessToken) {
       const items = (await fetchScope("notifications", accessToken)) || [];
       const unread = items.filter((n) => !n.read);
       return { unreadCount: unread.length, items: unread.slice(0, 10) };
+    }
+    case "send_schedule_image": {
+      const sessions = (await fetchScope("schedule", accessToken)) || [];
+      if (!sessions.length) return { error: "no schedule" };
+      const { png, caption } = await renderScheduleImage(sessions);
+      return { __photo: png, __caption: caption, count: sessions.length };
+    }
+    case "send_assignments_image": {
+      const items = (await fetchScope("assignments", accessToken)) || [];
+      if (!items.length) return { error: "no assignments" };
+      const { png, caption } = await renderAssignmentsImage(items);
+      return { __photo: png, __caption: caption, count: items.length };
+    }
+    case "send_grades_image": {
+      const items = (await fetchScope("grades", accessToken)) || [];
+      if (!items.length) return { error: "no grades" };
+      const { png, caption } = await renderGradesImage(items);
+      return { __photo: png, __caption: caption, count: items.length };
     }
     default:
       return { error: `unknown tool: ${name}` };

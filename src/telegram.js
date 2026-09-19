@@ -35,6 +35,25 @@ export async function sendMessage(chatId, text, extra = {}) {
   return data.result;
 }
 
+// Send a PNG buffer as a photo. Used by the image-rendering tools.
+export async function sendPhoto(chatId, pngBuffer, caption = "") {
+  if (!token) throw new Error("TELEGRAM_BOT_TOKEN not set");
+  const form = new FormData();
+  form.append("chat_id", chatId);
+  form.append("photo", new Blob([pngBuffer], { type: "image/png" }), "tuwaiq.png");
+  if (caption) {
+    form.append("caption", caption);
+    form.append("parse_mode", "HTML");
+  }
+  const res = await globalThis.fetch(`${API}/bot${token}/sendPhoto`, {
+    method: "POST",
+    body: form,
+  });
+  const data = await res.json();
+  if (!data.ok) throw new Error(`telegram error: ${JSON.stringify(data).slice(0, 200)}`);
+  return data.result;
+}
+
 // Long-poll loop. One call per bot instance; run in the background.
 export async function startPolling() {
   if (!token || polling) return;

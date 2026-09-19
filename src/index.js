@@ -18,7 +18,7 @@ import {
   escapeHtml as esc,
 } from "./format.js";
 import { askAI, aiConfig, isAIEnabled } from "./ai.js";
-import { setAIHandler } from "./telegram.js";
+import { setAIHandler, sendPhoto } from "./telegram.js";
 
 const PORT = process.env.PORT || 3000;
 
@@ -47,8 +47,14 @@ async function answerWithAI(chatId, question) {
   await sendMessage(chatId, "🤖 ثواني…").catch(() => {});
   try {
     const res = await askAI(question, { accessToken: tokens.accessToken });
-    for (const chunk of chunkText(res.reply, 3800)) {
-      await sendMessage(chatId, chunk);
+    // Image tools return a PNG alongside (or instead of) the text.
+    if (res.photo) {
+      await sendPhoto(chatId, res.photo, res.caption || "").catch(() => {});
+    }
+    if (res.reply) {
+      for (const chunk of chunkText(res.reply, 3800)) {
+        await sendMessage(chatId, chunk);
+      }
     }
   } catch (err) {
     await sendMessage(chatId, `⚠️ ما قدرت أجاوب: <code>${esc(err.message)}</code>`);
@@ -480,6 +486,41 @@ function registerCommands() {
   });
 
   // Raw JSON export for anything the structured commands don't cover yet.
+  // Send a rendered PNG image of a scope — schedule, assignments or grades.
+  on("/img", async ({ chatId, args }) => {
+    if (!(await requireLogin(chatId))) return;
+    const scope = args[0];
+    const valid = ["schedule", "assignments", "grades"];
+    if (!valid.includes(scope)) {
+      await sendMessage(
+        chatId,
+        "🖼 <b>صورة</b>\n\nالاستعمال: <code>/img &lt;نطاق&gt;</code>\n\n<code>" +
+          valid.join("</code> · <code>") +
+          "</code>\n\n<i>مثال: /img schedule — يجدولك كصورة مرتبة</i>"
+      );
+      return;
+    }
+    const tokens = await getTokens();
+    try {
+      const items = await fetchScope(scope, tokens.accessToken);
+      if (!Array.isArray(items) || !items.length) {
+        await sendMessage(chatId, `ما في بيانات لـ <code>${esc(scope)}</code> الحين.`);
+        return;
+      }
+      const { renderScheduleImage, renderAssignmentsImage, renderGradesImage } =
+        await import("./images.js");
+      const out =
+        scope === "schedule"
+          ? await renderScheduleImage(items)
+          : scope === "assignments"
+          ? await renderAssignmentsImage(items)
+          : await renderGradesImage(items);
+      await sendPhoto(chatId, out.png, out.caption);
+    } catch (err) {
+      await sendMessage(chatId, `⚠️ ما قدرت أصوّر: <code>${esc(err.message)}</code>`);
+    }
+  });
+
   on("/export", async ({ chatId, args }) => {
     if (!(await requireLogin(chatId))) return;
     const scope = args[0];
@@ -518,6 +559,7 @@ const HELP_TEXT = `<b>🤖 أوامر بوت طويق</b>
 /notifications — الإشعارات
 /unread — عدد الإشعارات غير المقروءة
 /download 12 — تحميل مادة برقمها
+/img schedule — صورة للجدول/الواجبات/الدرجات
 /export grades — تصدير JSON لأي نطاق
 /due — الواجبات المستحقة خلال ٢٤ ساعة
 

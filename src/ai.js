@@ -15,11 +15,30 @@ import { getTokens } from "./store.js";
 
 const DEFAULT_MODEL = process.env.AI_MODEL || "Atria-Dawn-Preview";
 
-const SYSTEM_PROMPT = `أنت "طويق بوت"، مساعد ذكي لطالب في مدارس طويق. تجاوب بالعربية الفصحى الطبيعية، واضح ومختصر ومظبوط.
+// The model has no clock. Without this it calls whatever day it guesses
+// "today" and gives wrong advice about what is due tonight.
+const nowLine = () => {
+  const d = new Date();
+  const days = ["الأحد", "الاثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة", "السبت"];
+  const months = [
+    "يناير", "فبراير", "مارس", "أبريل", "مايو", "يونيو",
+    "يوليو", "أغسطس", "سبتمبر", "أكتوبر", "نوفمبر", "ديسمبر",
+  ];
+  const h = d.getUTCHours();
+  const ap = h >= 12 ? "مساءً" : "صباحًا";
+  const h12 = h % 12 === 0 ? 12 : h % 12;
+  return `التاريخ والوقت الحالي (توقيت جرينتش): ${days[d.getUTCDay()]} ${d.getUTCDate()} ${months[d.getUTCMonth()]} ${d.getUTCFullYear()}، الساعة ${h12}:${String(d.getUTCMinutes()).padStart(2, "0")} ${ap}`;
+};
+
+const SYSTEM_PROMPT = `أنت "طويخ بوت" — مساعد ذكي لطالب في مدارس طويق. تجاوب بالعربية الفصحى الطبيعية، واضح ومختصر ومظبوط.
+
+${nowLine()}
 
 القواعد:
 - عندك أدوات (tools) تجيب لك بيانات حقيقية ومحدّثة من المنصة. استخدمها دايمًا — ما تعذر أبدًا بقولك "ما عندي بيانات".
-- لو السؤال يحتاج بيانات، استدعِ الأداة المناسبة أولًا، ثم جاوب من نتايجها.
+- لو السؤال يحتاج بيانات، استدعِ الأداة المناسبة أولًا، ثم جاوب من نتايجها الحقيقية. ما تخترع شي.
+- الحالات (status) في الواجبات: Pending = لم يُسلَّم بعد، Submitted = مُسلَّم وينتظر التصحيح، Graded = مُصحَّح وفيه درجة. "متأخر" = Pending والموعد فات.
+- لما تقول "اليوم" أو "بكرة"، ارجع للتاريخ المكتوب فوق وحسبه منه بالضبط.
 - نظّم الإجابة: استخدم تنسيق مرتب (عناوين، نقط، جداول صغيرة، إيموجي مناسب) بدل فقرات طويلة.
 - للتواريخ استخدم صيغة عربية حلوة مثل "الاثنين 21 سبتمبر، 11:00 مساءً".
 - خط أحمر: ما تقدر تحلّ الواجبات، ولا ترفّعها، ولا تكتب إجابات نيابة عن الطالب. اعتذر بلطف ووضّح إن مساعدتك للتنظيم والمتابعة فقط.
@@ -107,7 +126,11 @@ export async function askAI(userQuestion, opts = {}) {
 
 // Primary path: MCP-style tool calling. The model pulls exactly the scopes
 // it needs, so simple questions are fast and detailed ones are thorough.
+// Image tools (renderScheduleImage etc.) return a PNG the caller sends.
+let pendingPhoto = null;
+
 async function askWithTools(userQuestion, cfg, accessToken) {
+  pendingPhoto = null;
   const messages = [
     { role: "system", content: SYSTEM_PROMPT },
     { role: "user", content: userQuestion },
@@ -124,8 +147,13 @@ async function askWithTools(userQuestion, cfg, accessToken) {
     // No tool calls → this is the final answer.
     if (!toolCalls.length) {
       const reply = (msg.content || "").trim();
-      if (!reply) return { ok: false, reply: "⚠️ الجواب طلع فاضي. جرّب مرة ثانية." };
-      return { ok: true, reply };
+      if (!reply) {
+        // Some providers return an empty content on the first pass but have
+        // already emitted tool results; keep the photo if we have one.
+        if (pendingPhoto) return { ok: true, reply: "", photo: pendingPhoto };
+        return { ok: false, reply: "⚠️ الجواب طلع فاضي. جرّب مرة ثانية." };
+      }
+      return { ok: true, reply, photo: pendingPhoto || null };
     }
 
     // Record the assistant's tool-call message, then each tool result.
@@ -142,6 +170,12 @@ async function askWithTools(userQuestion, cfg, accessToken) {
         result = await runTool(tc.function.name, args, accessToken);
       } catch (err) {
         result = { error: err.message };
+      }
+      // Image tools hand back a PNG buffer; carry it out to the caller.
+      // The model never sees the binary — only a small confirmation.
+      if (result && result.__photo) {
+        pendingPhoto = { photo: result.__photo, caption: result.__caption || "" };
+        result = { sent: true, kind: "photo", caption: result.__caption || "" };
       }
       messages.push({
         role: "tool",
