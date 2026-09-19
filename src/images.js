@@ -10,6 +10,23 @@ import { renderAsync } from "@resvg/resvg-js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
+import { fileURLToPath } from "node:url";
+
+// Load the Arabic font from the repo rather than trusting the system font
+// collection. resvg silently drops glyphs when it cannot resolve a family,
+// which rendered an "empty" schedule image on Render even though the apt
+// font package was installed.
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const FONT_DIR = path.join(__dirname, "..", "assets", "fonts");
+
+// resvg resolves font families from the system collection, but silently drops
+// glyphs (leaving an "empty" image with no visible text) when a family is
+// missing. Loading the TTFs explicitly from the repo makes rendering
+// identical everywhere — the Dockerfile installs the same fonts as a backup.
+const fontFiles = [
+  path.join(FONT_DIR, "NotoSansArabic-Regular.ttf"),
+  path.join(FONT_DIR, "NotoSansArabic-Bold.ttf"),
+];
 
 const ARABIC_FONT = "Noto Sans Arabic, Noto Sans, sans-serif";
 
@@ -27,6 +44,20 @@ const C = {
   bad: "#f87171",
   purple: "#a78bfa",
 };
+
+const RENDER_OPTS = {
+  background: C.bg,
+  font: {
+    fontFiles,
+    loadSystemFonts: true,
+    defaultFontFamily: "Noto Sans Arabic",
+  },
+};
+
+async function toPng(svg, width = 1000) {
+  const img = await renderAsync(svg, { ...RENDER_OPTS, fitTo: { mode: "width", value: width } });
+  return img.asPng();
+}
 
 const esc = (s) =>
   String(s ?? "")
@@ -59,13 +90,6 @@ const fmtDayName = (iso) => {
   return `${DAY[d.getUTCDay()]} ${d.getUTCDate()} ${MONTH[d.getUTCMonth()]}`;
 };
 
-async function toPng(svg, width = 1000) {
-  const img = await renderAsync(svg, {
-    fitTo: { mode: "width", value: width },
-    background: C.bg,
-  });
-  return img.asPng();
-}
 
 function header(title, subtitle) {
   return `
