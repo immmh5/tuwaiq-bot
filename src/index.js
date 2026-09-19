@@ -19,6 +19,7 @@ import {
 } from "./format.js";
 import { askAI, aiConfig, isAIEnabled } from "./ai.js";
 import { setAIHandler, sendPhoto } from "./telegram.js";
+import { remember, recentContext, getHistory, clear as clearMemory } from "./memory.js";
 
 const PORT = process.env.PORT || 3000;
 
@@ -46,12 +47,23 @@ async function answerWithAI(chatId, question) {
   const tokens = await getTokens();
   await sendMessage(chatId, "🤖 ثواني…").catch(() => {});
   try {
-    const res = await askAI(question, { accessToken: tokens.accessToken });
+    const history = recentContext(chatId);
+    const res = await askAI(question, { accessToken: tokens.accessToken, history });
     // Image tools return a PNG alongside (or instead of) the text.
+    // Surface failures instead of swallowing them — otherwise the model
+    // cheerfully claims the image was sent while nothing arrived.
     if (res.photo) {
-      await sendPhoto(chatId, res.photo, res.caption || "").catch(() => {});
+      try {
+        await sendPhoto(chatId, res.photo, res.caption || "");
+      } catch (err) {
+        await sendMessage(
+          chatId,
+          `⚠️ ما قدرت أوصل الصورة: <code>${esc(err.message).slice(0, 150)}</code>\n\n<i>جرّب: /img schedule</i>`
+        ).catch(() => {});
+      }
     }
     if (res.reply) {
+      remember(chatId, "assistant", res.reply);
       for (const chunk of chunkText(res.reply, 3800)) {
         await sendMessage(chatId, chunk);
       }
@@ -486,6 +498,29 @@ function registerCommands() {
   });
 
   // Raw JSON export for anything the structured commands don't cover yet.
+  // Recall earlier conversation. The model only sees the last few exchanges
+  // by default; this lets the student page back further on demand.
+  on("/history", async ({ chatId, args }) => {
+    const n = Math.min(Number(args[0]) || 10, 20);
+    const rows = getHistory(chatId, n);
+    if (!rows.length) {
+      await sendMessage(chatId, "📭 ما في محادثة محفوظة الحين.\n\n<i>اكتب أي سؤال وبأذكره.</i>");
+      return;
+    }
+    const lines = [`<b>💬 آخر ${Math.ceil(rows.length / 2)} محادثة</b>`, ""];
+    for (const m of rows) {
+      const who = m.role === "user" ? "🙋‍♂️ أنت" : "🤖 البوت";
+      lines.push(`${who}: <i>${esc(m.content.slice(0, 300))}</i>`);
+      lines.push("");
+    }
+    await sendMessage(chatId, lines.join("\n"));
+  });
+
+  on("/forget", async ({ chatId }) => {
+    clearMemory(chatId);
+    await sendMessage(chatId, "🧹 نسيت المحادثة السابقة.\n\n<i>ابدأ من جديد — أسمعك.</i>");
+  });
+
   // Send a rendered PNG image of a scope — schedule, assignments or grades.
   on("/img", async ({ chatId, args }) => {
     if (!(await requireLogin(chatId))) return;
@@ -560,6 +595,8 @@ const HELP_TEXT = `<b>🤖 أوامر بوت طويق</b>
 /unread — عدد الإشعارات غير المقروءة
 /download 12 — تحميل مادة برقمها
 /img schedule — صورة للجدول/الواجبات/الدرجات
+/history 10 — استرجع آخر محادثات
+/forget — امسح ذاكرة المحادثة
 /export grades — تصدير JSON لأي نطاق
 /due — الواجبات المستحقة خلال ٢٤ ساعة
 
@@ -601,6 +638,7 @@ async function mainWithRetry() {
       registerCommands();
       // Route free-text messages (no "/") to the AI layer.
       setAIHandler(async ({ chatId, text }) => {
+        remember(chatId, "user", text);
         await answerWithAI(chatId, text);
       });
       startPolling();

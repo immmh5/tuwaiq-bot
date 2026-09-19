@@ -11,6 +11,7 @@
 import { TOOL_SPECS, runTool } from "./ai-tools.js";
 import { fetchScope } from "./watcher.js";
 import { escapeHtml as esc } from "./format.js";
+import { recentContext } from "./memory.js";
 import { getTokens } from "./store.js";
 
 const DEFAULT_MODEL = process.env.AI_MODEL || "Atria-Dawn-Preview";
@@ -117,8 +118,12 @@ export async function askAI(userQuestion, opts = {}) {
   const accessToken = opts.accessToken;
   if (!accessToken) return { ok: false, reply: "🔒 الحساب غير مربوط." };
 
+  // Carry the recent conversation so follow-ups ("واللي بعدها؟", "كم درجتها؟")
+  // resolve without the student restating the subject.
+  const history = opts.history || [];
+
   try {
-    return await askWithTools(userQuestion, cfg, accessToken);
+    return await askWithTools(userQuestion, cfg, accessToken, history);
   } catch (err) {
     // Some providers reject the tools array outright (400) or don't return
     // tool_calls. Fall back to the snapshot design so the bot still answers.
@@ -138,18 +143,18 @@ export async function askAI(userQuestion, opts = {}) {
 // Image tools (renderScheduleImage etc.) return a PNG the caller sends.
 let pendingPhoto = null;
 
-async function askWithTools(userQuestion, cfg, accessToken) {
+async function askWithTools(userQuestion, cfg, accessToken, history = []) {
   pendingPhoto = null;
   const messages = [
     { role: "system", content: SYSTEM_PROMPT },
-    // Reasoning step: force the model to state what it needs before acting.
-    // This is the "think" part of plan → act → verify → answer, and it
-    // measurably cuts the contradictory answers the student was seeing.
     {
       role: "system",
       content:
         "قبل ما تجاوب أو تستدعي أداة، اكتب سطر واحد يوضّح فهمك للسؤال ووش تحتاج بالضبط (بالعربية، بدون تفاصيل زايدة). هذا التفكير داخلي، ما يظهر للطالب.",
     },
+    // Prior turns give the model context for pronouns and follow-ups.
+    // Filtered to user/assistant only; tool chatter would waste the budget.
+    ...history.filter((m) => m.role === "user" || m.role === "assistant").slice(-10),
     { role: "user", content: userQuestion },
   ];
 

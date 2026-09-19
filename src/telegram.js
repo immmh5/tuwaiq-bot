@@ -1,7 +1,30 @@
 // src/telegram.js — minimal Telegram Bot API client (long polling)
 import { fetchJson } from "./http.js";
+import { spawn } from "node:child_process";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 
 const API = "https://api.telegram.org";
+
+// Run curl with the given args and return { status, text }.
+// Used for multipart uploads (photos) that the JSON helper can't express.
+function curlRaw(args) {
+  return new Promise((resolve, reject) => {
+    const child = spawn("curl", args, { env: process.env });
+    let out = Buffer.alloc(0);
+    let err = "";
+    child.stdout.on("data", (c) => (out = Buffer.concat([out, c])));
+    child.stderr.on("data", (c) => (err += c.toString()));
+    child.on("error", () => reject(new Error("curl binary not found")));
+    child.on("close", (code) => {
+      if (code !== 0) return reject(new Error(`curl exited ${code}: ${err.trim()}`));
+      const text = out.toString("utf-8");
+      const m = text.match(/__STATUS__:(\d+)/);
+      resolve({ status: m ? Number(m[1]) : 200, text });
+    });
+  });
+}
 
 let token = null;
 let offset = 0;
@@ -36,6 +59,11 @@ export async function sendMessage(chatId, text, extra = {}) {
 }
 
 // Send a PNG buffer as a photo. Used by the image-rendering tools.
+//
+// Why curl and not globalThis.fetch: sendMessage goes through the app's
+// curl-based transport, which is what reaches api.telegram.org from the
+// Render container. sendPhoto previously called raw fetch, which failed
+// silently — the tool reported success and the student never got the image.
 export async function sendPhoto(chatId, pngBuffer, caption = "") {
   if (!token) throw new Error("TELEGRAM_BOT_TOKEN not set");
   const form = new FormData();
@@ -45,13 +73,36 @@ export async function sendPhoto(chatId, pngBuffer, caption = "") {
     form.append("caption", caption);
     form.append("parse_mode", "HTML");
   }
-  const res = await globalThis.fetch(`${API}/bot${token}/sendPhoto`, {
-    method: "POST",
-    body: form,
-  });
-  const data = await res.json();
-  if (!data.ok) throw new Error(`telegram error: ${JSON.stringify(data).slice(0, 200)}`);
-  return data.result;
+  // curl multipart: -F builds the form from key=value pairs; the photo is
+  // streamed from a temp file so binary bytes survive intact.
+  const tmp = path.join(os.tmpdir(), `tuwaiq-${Date.now()}.png`);
+  await fs.writeFile(tmp, pngBuffer);
+  try {
+    const args = [
+      "-sS", "--show-error", "--compressed", "-L",
+      "--max-time", "60",
+      // http.js parses the same marker; keep the wire format identical.
+      "-w", "\n__STATUS__:%{http_code}",
+      "-F", `chat_id=${chatId}`,
+      "-F", `photo=@${tmp};type=image/png`,
+    ];
+    if (caption) {
+      args.push("-F", `caption=${caption}`);
+      args.push("-F", "parse_mode=HTML");
+    }
+    args.push(`${API}/bot${token}/sendPhoto`);
+    const { status, text } = await curlRaw(args);
+    let data;
+    try {
+      data = JSON.parse(text);
+    } catch {
+      data = { ok: false, description: text.slice(0, 200) };
+    }
+    if (!data.ok) throw new Error(`telegram error: ${JSON.stringify(data).slice(0, 300)}`);
+    return data.result;
+  } finally {
+    await fs.unlink(tmp).catch(() => {});
+  }
 }
 
 // Long-poll loop. One call per bot instance; run in the background.
