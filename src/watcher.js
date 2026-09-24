@@ -156,6 +156,12 @@ export async function runCheckOnce() {
     const fresh = await collectFreshItems(results);
     await notifyFresh(fresh);
 
+    // Deadline nudge: fire once per pending assignment when it crosses the
+    // 24-hour line, not on every check — otherwise the bot spams every cycle.
+    if (config.assignments && Array.isArray(results.assignments)) {
+      await checkDeadlineReminders(results.assignments);
+    }
+
     lastCheck = new Date().toISOString();
     lastError = null;
     consecutiveFailures = 0;
@@ -191,6 +197,63 @@ export async function runCheckOnce() {
   }
 }
 
+// Deadline reminders: "باقيلك بس يوم" — fire once per assignment when it
+// crosses the 24h line, then again if it turns overdue. Each nudge records
+// which milestone it hit so a 10-minute cycle never repeats the same alert.
+async function checkDeadlineReminders(assignments) {
+  const cfg = await getKv("reminders_config", { enabled: true });
+  if (cfg.enabled === false) return;
+
+  const now = Date.now();
+  const DAY = 24 * 60 * 60 * 1000;
+  const sent = await getKv("reminders_sent", {});
+
+  for (const a of assignments) {
+    if (!a || !a.dueAt) continue;
+    const st = String(a.status || "").toLowerCase();
+    if (st !== "pending") continue; // only outstanding work gets nudged
+
+    const due = new Date(a.dueAt).getTime();
+    if (!Number.isFinite(due)) continue;
+
+    const key = String(a.id);
+    const overdue = due < now;
+    const dueSoon = !overdue && due - now <= DAY;
+
+    // Milestone: "due_soon" first, "overdue" if it slips past. An assignment
+    // that goes from soon → overdue gets exactly one follow-up.
+    const milestone = overdue ? "overdue" : dueSoon ? "due_soon" : null;
+    if (!milestone) continue;
+    if (sent[key] === milestone) continue; // already said this one
+
+    const hours = overdue
+      ? Math.max(1, Math.round((now - due) / (60 * 60 * 1000)))
+      : Math.max(1, Math.round((due - now) / (60 * 60 * 1000)));
+
+    const urgent = overdue
+      ? `🔴 <b>فاتك الواجب!</b> تأخر <b>${hours} ساعة</b>`
+      : `⏰ <b>باقي أقل من ٢٤ ساعة</b> — حوالي ${hours} ساعة`;
+
+    await notifyOwner(
+      `${urgent}\n\n` +
+        `📝 <b>${escapeHtml(a.title || "واجب")}</b>\n` +
+        `📚 ${escapeHtml(a.subject || "—")}\n` +
+        `⏰ الاستحقاق: <code>${fmtDate(a.dueAt)}</code>\n\n` +
+        `<i>عشان أسكت عنه، سلّمه أو اطلب مني أساعدك بالتنظيم.</i>`
+    ).catch((e) => console.error("reminder failed:", e.message));
+
+    sent[key] = milestone;
+  }
+
+  // Prince: drop keys for work that is no longer pending, so the set can't
+  // grow without bound over a whole semester.
+  const live = new Set(assignments.filter((a) => a && a.id != null).map((a) => String(a.id)));
+  for (const k of Object.keys(sent)) if (!live.has(k)) delete sent[k];
+
+  await setKv("reminders_sent", sent);
+  await setKv("reminders_config", cfg);
+}
+
 // Returns only items we have never seen before (per persistent id)
 async function collectFreshItems(results) {
   const fresh = [];
@@ -208,6 +271,13 @@ async function collectFreshItems(results) {
 async function notifyFresh(fresh) {
   if (!fresh.length) return;
   const config = await getKv("watch_config", {});
+  // Master switch: mute "new item" alerts without stopping the scan or the
+  // deadline reminders. Items are still marked seen so they don't burst out
+  // the moment alerts come back on.
+  if (config.newAlerts === false) {
+    for (const { item } of fresh) await markSeen(item);
+    return;
+  }
   const lines = [];
   for (const { scope, item } of fresh) {
     lines.push(formatItem(scope, item));

@@ -60,9 +60,12 @@ async function answerWithAI(chatId, question) {
     // Image tools return a PNG alongside (or instead of) the text.
     // Surface failures instead of swallowing them — otherwise the model
     // cheerfully claims the image was sent while nothing arrived.
+    // Image tools return { photo: <Buffer>, caption }; pass both parts on.
+    // (Handing the wrapper to sendPhoto directly was the "instance of Object"
+    // error that made every AI image fail to arrive.)
     if (res.photo) {
       try {
-        await sendPhoto(chatId, res.photo, res.caption || "");
+        await sendPhoto(chatId, res.photo.photo, res.photo.caption || res.caption || "");
       } catch (err) {
         await sendMessage(
           chatId,
@@ -506,6 +509,53 @@ function registerCommands() {
   });
 
   // Raw JSON export for anything the structured commands don't cover yet.
+  // Deadline-reminder switch: "باقيلك بس يوم لا يفوتك" on or off.
+  // Stored in reminders_config so it survives restarts.
+  on("/remind", async ({ chatId, args }) => {
+    const arg = String(args[0] || "").toLowerCase();
+    const cfg = await getKv("reminders_config", { enabled: true });
+    if (arg === "on" || arg === "off") {
+      cfg.enabled = arg === "on";
+      await setKv("reminders_config", cfg);
+      await sendMessage(
+        chatId,
+        cfg.enabled
+          ? "⏰ <b>تنبيهات الموعد النهائي مفعّلة</b>\n\nبأرسلك تنبيه لكل واجب باقي عليه <b>أقل من ٢٤ ساعة</b>، وتنبيه ثاني لو فاته الموعد.\n\n<i>مرة وحدة لكل واجب — ما بسپم.</i>"
+          : "🔕 <b>تنبيهات الموعد النهائي مطفية</b>\n\nما بأرسل تذكيرات الأوقات.\n\n<i>جرّب /remind on وقت ما تبيها ترجع.</i>"
+      );
+      return;
+    }
+    await sendMessage(
+      chatId,
+      `⏰ <b>تنبيهات الموعد النهائي</b> — <b>${cfg.enabled === false ? "مطفية 🔕" : "مفعّلة ✅"}</b>\n\n` +
+        "باقي عليه <b>أقل من ٢٤ ساعة</b> → تنبيه\nفات الموعد → تنبيه ثاني\n\n" +
+        "<code>/remind on</code> — تشغيل\n<code>/remind off</code> — إيقاف"
+    );
+  });
+
+  // Master switch for the "new item appeared" notifications.
+  on("/newalerts", async ({ chatId, args }) => {
+    const arg = String(args[0] || "").toLowerCase();
+    const cfg = await getKv("watch_config", {});
+    if (arg === "on" || arg === "off") {
+      // Keep scope toggles, flip only the new-alert kill switch.
+      cfg.newAlerts = arg === "on";
+      await setKv("watch_config", cfg);
+      await sendMessage(
+        chatId,
+        cfg.newAlerts
+          ? "🔔 <b>تنبيهات الجديد مفعّلة</b>\n\nبأرسلك كل واجب أو مادة أو اختبار أو درجة جديدة أول ما تنزل."
+          : "🔕 <b>تنبيهات الجديد مطفية</b>\n\nما بنبهك على الشي الجديد.\n\n<i>الفحص لسه شغّال — استخدم الأوامر وقت ما تبي.</i>"
+      );
+      return;
+    }
+    await sendMessage(
+      chatId,
+      `🔔 <b>تنبيهات الجديد</b> — <b>${cfg.newAlerts === false ? "مطفية 🔕" : "مفعّلة ✅"}</b>\n\n` +
+        "<code>/newalerts on</code> — تشغيل\n<code>/newalerts off</code> — إيقاف"
+    );
+  });
+
   // Recall earlier conversation. The model only sees the last few exchanges
   // by default; this lets the student page back further on demand.
   on("/history", async ({ chatId, args }) => {
