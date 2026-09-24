@@ -138,7 +138,27 @@ export async function saveTokens(tokens) {
 }
 
 export async function getTokens() {
-  return getKv("tokens", null);
+  const t = await getKv("tokens", null);
+  if (!t?.accessToken) return t;
+  // Access tokens expire. When one does, renew it from the refresh token
+  // instead of letting every subsequent call fail with an expired token —
+  // that is what silently stopped the watcher.
+  const exp = Number(t.accessExpiresAt || 0);
+  const now = Date.now() / 1000;
+  if (exp > now + 60) return t;
+  if (!t.refresh_token) return t;
+  try {
+    const { refresh } = await import("./auth.js");
+    const fresh = await refresh(t.refresh_token);
+    if (fresh?.accessToken) {
+      await setKv("tokens", { ...t, ...fresh });
+      console.log("access token refreshed");
+      return { ...t, ...fresh };
+    }
+  } catch (err) {
+    console.error("token refresh failed:", err.message);
+  }
+  return t;
 }
 
 // --- seen items ---------------------------------------------------------------
