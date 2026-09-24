@@ -121,7 +121,11 @@ export async function renderScheduleGridImage(sessions) {
     endMin: toMin(s.endTime) || toMin(s.startTime) + 45,
     cancelled: s.status === "cancelled",
   });
-  const all = (sessions || []).filter((s) => s.status !== "cancelled").map(norm);
+  // The platform sends status capitalised ("Cancelled", "Pending"), so the
+  // comparison is case-insensitive — a case-sensitive filter was letting
+  // cancelled classes through and the student saw them in the table.
+  const isCancelled = (s) => String(s.status || (s.isCancelled ? "cancelled" : "")).toLowerCase() === "cancelled";
+  const all = (sessions || []).filter((s) => !isCancelled(s)).map(norm);
   const days = [...new Set(all.map((s) => s.day))].sort();
   if (!days.length) days.push(today);
 
@@ -150,13 +154,18 @@ export async function renderScheduleGridImage(sessions) {
 
   const PAD = 28;
   const LABEL = 84; // right-side gutter for the time axis (RTL)
-  const HEAD = 64; // header row height
   const CW = Math.floor((1000 - PAD * 2 - LABEL) / days.length);
 
   // Vertical axis: one minute of class time maps to a fixed number of
   // pixels, exactly like the site's 45-min = 67.5px grid. The whole grid
   // stretches to fit the week's earliest start and latest end.
-  const TOP = HEAD + 8;
+  // Three stacked bands, each with its own clear space:
+  //   title block → day headers → grid.
+  // Earlier the today-highlight rect started at y=36 and ran into the title,
+  // which is what showed up as an empty box floating above the table.
+  const TITLE_H = 76;
+  const HEAD_H = 56;
+  const TOP = TITLE_H + HEAD_H + 6;
   const PPM = 1.5; // px per minute (45 min → 67.5px, the site's own scale)
   const h = TOP + SPAN * PPM + 70;
 
@@ -179,10 +188,10 @@ export async function renderScheduleGridImage(sessions) {
   for (let i = 0; i < days.length; i++) {
     const x = xOf(i);
     const isToday = days[i] === today;
-    if (isToday) parts.push(`<rect x="${x}" y="36" width="${CW - 6}" height="${HEAD - 12}" rx="10" fill="#7c5cbf1f"/>`);
-    parts.push(`<line x1="${x}" y1="${HEAD + 4}" x2="${x + CW - 6}" y2="${HEAD + 4}" stroke="rgba(124,92,191,.14)" stroke-width="1"/>`);
+    if (isToday) parts.push(`<rect x="${x}" y="${TITLE_H}" width="${CW - 6}" height="${HEAD_H - 4}" rx="10" fill="#7c5cbf1f"/>`);
+    parts.push(`<line x1="${x}" y1="${TITLE_H + HEAD_H - 4}" x2="${x + CW - 6}" y2="${TITLE_H + HEAD_H - 4}" stroke="rgba(124,92,191,.14)" stroke-width="1"/>`);
     parts.push(
-      `<text x="${x + CW / 2 - 3}" y="60" font-family="${ARABIC_FONT}" font-size="20" font-weight="800" fill="${isToday ? "#7c5cbf" : "#2c2540"}" text-anchor="middle" direction="rtl">${esc(fmtDayName(days[i]).split(" ")[0])}</text>`
+      `<text x="${x + CW / 2 - 3}" y="${TITLE_H + 26}" font-family="${ARABIC_FONT}" font-size="20" font-weight="800" fill="${isToday ? "#7c5cbf" : "#2c2540"}" text-anchor="middle" direction="rtl">${esc(fmtDayName(days[i]).split(" ")[0])}</text>`
     );
   }
 
@@ -230,14 +239,16 @@ export async function renderScheduleGridImage(sessions) {
 
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" direction="rtl">
     <rect width="${w}" height="${h}" fill="#ffffff"/>
-    <text x="${w / 2}" y="34" font-family="${ARABIC_FONT}" font-size="26" font-weight="700" fill="#2c2540" text-anchor="middle" direction="rtl">🗓 جدولي الأسبوعي</text>
-    <text x="${w / 2}" y="62" font-family="${ARABIC_FONT}" font-size="16" fill="#8a8798" text-anchor="middle" direction="rtl">نفس ألوان وتخطيط المنصة — الحصص الملغاة باهتة</text>
+    <text x="${w / 2}" y="36" font-family="${ARABIC_FONT}" font-size="26" font-weight="700" fill="#2c2540" text-anchor="middle" direction="rtl">🗓 جدولي الأسبوعي</text>
+    <text x="${w / 2}" y="64" font-family="${ARABIC_FONT}" font-size="16" fill="#8a8798" text-anchor="middle" direction="rtl">جدولك الفعلي لهذا الأسبوع</text>
     ${parts.join("")}
   </svg>`;
-  const liveCount = all.filter((s) => !s.cancelled).length;
+  const liveCount = all.length;
+  const countWord =
+    liveCount === 1 ? "حصة واحدة" : liveCount === 2 ? "حصتين" : `${liveCount} حصص`;
   return {
     png: await toPng(svg),
-    caption: `🗓 جدولك الأسبوعي — ${liveCount} حصة فعلية (نفس ترتيب المنصة)`,
+    caption: `🗓 جدولك الأسبوعي — ${countWord}`,
   };
 }
 
