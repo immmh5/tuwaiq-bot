@@ -92,11 +92,15 @@ export async function sendPhoto(chatId, pngBuffer, caption = "") {
     }
     args.push(`${API}/bot${token}/sendPhoto`);
     const { status, text } = await curlRaw(args);
+    // curlRaw appends the __STATUS__ marker to the body; strip it before
+    // parsing or a successful upload is misread as a failure. (This was
+    // reporting "couldn't deliver" for photos that had already arrived.)
+    const body = text.replace(/__STATUS__:\d*\s*$/, "").trim();
     let data;
     try {
-      data = JSON.parse(text);
+      data = JSON.parse(body);
     } catch {
-      data = { ok: false, description: text.slice(0, 200) };
+      data = { ok: false, description: body.slice(0, 200) };
     }
     if (!data.ok) throw new Error(`telegram error: ${JSON.stringify(data).slice(0, 300)}`);
     return data.result;

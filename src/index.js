@@ -583,25 +583,34 @@ function registerCommands() {
   on("/img", async ({ chatId, args }) => {
     if (!(await requireLogin(chatId))) return;
     const scope = args[0];
-    const valid = ["schedule", "assignments", "grades"];
+    const valid = ["schedule", "assignments", "grades", "grid"];
     if (!valid.includes(scope)) {
       await sendMessage(
         chatId,
         "🖼 <b>صورة</b>\n\nالاستعمال: <code>/img &lt;نطاق&gt;</code>\n\n<code>" +
           valid.join("</code> · <code>") +
-          "</code>\n\n<i>مثال: /img schedule — يجدولك كصورة مرتبة</i>"
+          "</code>\n\n<i>مثال: /img schedule — الجدول كصورة مرتبة\n/img grid — نفس تخطيط المنصة بالضبط (أيام كأعمدة وأوقات كصفوف)</i>"
       );
       return;
     }
     const tokens = await getTokens();
     try {
+      const { renderScheduleImage, renderAssignmentsImage, renderGradesImage, renderScheduleGridImage } =
+        await import("./images.js");
+      if (scope === "grid") {
+        const items = await fetchScope("schedule", tokens.accessToken);
+        if (!Array.isArray(items) || !items.length) {
+          await sendMessage(chatId, "ما في بيانات للجدول الحين.");
+          return;
+        }
+        await sendPhoto(chatId, (await renderScheduleGridImage(items)).png, "🗓 جدولك — نفس تخطيط المنصة");
+        return;
+      }
       const items = await fetchScope(scope, tokens.accessToken);
       if (!Array.isArray(items) || !items.length) {
         await sendMessage(chatId, `ما في بيانات لـ <code>${esc(scope)}</code> الحين.`);
         return;
       }
-      const { renderScheduleImage, renderAssignmentsImage, renderGradesImage } =
-        await import("./images.js");
       const out =
         scope === "schedule"
           ? await renderScheduleImage(items)

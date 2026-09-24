@@ -102,6 +102,109 @@ function header(title, subtitle) {
 }
 
 // ---- Schedule image ---------------------------------------------------------
+// ---- Schedule grid ----------------------------------------------------------
+// Mirrors the platform's own timetable layout: days as columns, times as
+// rows, a class placed in its slot and dimmed when cancelled. The site
+// renders a substitution as two cards stacked in the same slot — the
+// cancelled original pale, its replacement bold — and this reproduces that
+// exactly, so the image is the page's grid and not a re-interpretation.
+export async function renderScheduleGridImage(sessions) {
+  const today = new Date().toISOString().slice(0, 10);
+  const norm = (s) => ({
+    ...s,
+    day: String(s.date || "").slice(0, 10),
+    cancelled: s.status === "cancelled",
+  });
+  const all = (sessions || []).map(norm);
+  const days = [...new Set(all.map((s) => s.day))].sort();
+  if (!days.length) days.push(today);
+
+  // Distinct hours across the week become the row labels.
+  const hours = [...new Set(all.map((s) => Number(String(s.startTime).slice(0, 2))))].sort((a, b) => a - b);
+  if (!hours.length) hours.push(7);
+
+  // Palette per subject so each column's cards read as one course.
+  const tints = ["#7c6cff", "#e0556a", "#2f9e8f", "#d98a2b", "#4a8fe7", "#c25f9e", "#8aa23c", "#5f6b8c"];
+  const subjColor = new Map();
+  for (const s of all) if (s.subject && !subjColor.has(s.subject)) subjColor.set(s.subject, tints[subjColor.size % tints.length]);
+
+  const PAD = 28;
+  const LABEL = 84; // right-side gutter for the time axis (RTL)
+  const HEAD = 64; // header row height
+  const CW = Math.floor((1000 - PAD * 2 - LABEL) / days.length);
+  const RH = 74; // row height
+
+  const xOf = (i) => PAD + LABEL + i * CW;
+  const yOf = (i) => HEAD + i * RH;
+  const w = 1000;
+  const h = HEAD + hours.length * RH + 70;
+
+  const parts = [];
+  // Time axis (right gutter, RTL)
+  for (let i = 0; i < hours.length; i++) {
+    const y = yOf(i);
+    parts.push(`<line x1="${PAD}" y1="${y}" x2="${w - PAD}" y2="${y}" stroke="${C.line}" stroke-width="1"/>`);
+    parts.push(`<text x="${PAD + LABEL - 14}" y="${y + RH / 2 + 6}" font-family="${ARABIC_FONT}" font-size="19" fill="${C.sub}" text-anchor="end" direction="rtl">${hours[i]}:00</text>`);
+  }
+
+  // Day headers, today highlighted like the site's .is-today
+  for (let i = 0; i < days.length; i++) {
+    const x = xOf(i);
+    const isToday = days[i] === today;
+    if (isToday) parts.push(`<rect x="${x}" y="36" width="${CW - 6}" height="${HEAD - 12}" rx="10" fill="${C.accent}" opacity="0.16"/>`);
+    parts.push(`<text x="${x + CW / 2 - 3}" y="62" font-family="${ARABIC_FONT}" font-size="21" font-weight="700" fill="${isToday ? C.accent : C.text}" text-anchor="middle" direction="rtl">${esc(fmtDayName(days[i]).split(" ")[0])}</text>`);
+  }
+
+  // Slot lookup so a cancelled class and its replacement land in the same cell.
+  const slotOf = (s) => {
+    const d = days.indexOf(s.day);
+    const hh = Number(String(s.startTime).slice(0, 2));
+    return { col: d, row: hours.indexOf(hh) };
+  };
+  const bySlot = new Map();
+  for (const s of all) {
+    const k = `${slotOf(s).col}|${slotOf(s).row}`;
+    if (!bySlot.has(k)) bySlot.set(k, []);
+    bySlot.get(k).push(s);
+  }
+
+  for (const [key, items] of bySlot) {
+    const [col, row] = key.split("|").map(Number);
+    const x = xOf(col);
+    const y = yOf(row) + 4;
+    const live = items.filter((s) => !s.cancelled);
+    const cancelled = items.filter((s) => s.cancelled);
+    const rows = live.length || cancelled.length;
+    const cardH = Math.floor((RH - 10) / rows) - 4;
+
+    const draw = (s, idx, pale) => {
+      const cy = y + idx * (cardH + 4);
+      const tint = s.subject ? subjColor.get(s.subject) : C.accent;
+      const time = fmtClock(s.startTime);
+      parts.push(`<rect x="${x + 3}" y="${cy}" width="${CW - 12}" height="${cardH}" rx="7" fill="${tint}" opacity="${pale ? 0.13 : 0.2}"/>`);
+      parts.push(`<rect x="${x + 3}" y="${cy}" width="4" height="${cardH}" rx="2" fill="${tint}" opacity="${pale ? 0.35 : 0.9}"/>`);
+      parts.push(`<text x="${x + 14}" y="${cy + cardH / 2 + 1}" font-family="${ARABIC_FONT}" font-size="17" font-weight="${pale ? 400 : 700}" fill="${pale ? C.sub : C.text}" direction="rtl">${esc(s.title)}</text>`);
+      if (cardH > 40) {
+        parts.push(`<text x="${x + CW - 18}" y="${cy + cardH / 2 + 1}" font-family="${ARABIC_FONT}" font-size="14" fill="${C.sub}" text-anchor="end" direction="rtl">${esc(time)}${s.room ? " · " + esc(s.room) : ""}${pale ? " · ملغاة" : ""}</text>`);
+      }
+    };
+
+    live.forEach((s, i) => draw(s, i, false));
+    cancelled.forEach((s, i) => draw(s, live.length + i, true));
+  }
+
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" direction="rtl">
+    <rect width="${w}" height="${h}" fill="${C.bg}"/>
+    ${header("🗓 جدولي الأسبوع", "نفس تخطيط المنصة — الحصص الملغاة باهتة")}
+    ${parts.join("")}
+  </svg>`;
+  const liveCount = all.filter((s) => !s.cancelled).length;
+  return {
+    png: await toPng(svg),
+    caption: `🗓 جدولك الأسبوعي — ${liveCount} حصة فعلية (نفس ترتيب المنصة)`,
+  };
+}
+
 // The platform renders both halves of a substitution: the cancelled original
 // AND its replacement share a slot (same day + start time), and the original
 // is drawn pale. Drawing every row verbatim produced the "repeated classes"

@@ -13,6 +13,7 @@ import { fetchScope } from "./watcher.js";
 import { getMyAttendance, getSessionJoinLink } from "./tuwaiq.js";
 import {
   renderScheduleImage,
+  renderScheduleGridImage,
   renderAssignmentsImage,
   renderGradesImage,
 } from "./images.js";
@@ -131,6 +132,14 @@ export const TOOL_SPECS = [
   {
     type: "function",
     function: {
+      name: "send_schedule_grid",
+      description: "أرسل الجدول كصورة بشبكة مثل المنصة بالضبط (الأيام أعمدة والأوقات صفوف، الحصص الملغاة باهتة). استخدمها لما يريد الجدول 'مثل ما يظهر في الموقع'.",
+      parameters: { type: "object", properties: {}, required: [] },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "send_grades_image",
       description: "أرسل الدرجات كصورة مع نسب مئوية وألوان. استخدمها لما يطلب الدرجات كصورة.",
       parameters: { type: "object", properties: {}, required: [] },
@@ -238,6 +247,12 @@ export async function runTool(name, args, accessToken) {
       const sessions = (await fetchScope("schedule", accessToken)) || [];
       if (!sessions.length) return { error: "no schedule" };
       const { png, caption } = await renderScheduleImage(sessions);
+      return { __photo: png, __caption: caption, count: sessions.length };
+    }
+    case "send_schedule_grid": {
+      const sessions = (await fetchScope("schedule", accessToken)) || [];
+      if (!sessions.length) return { error: "no schedule" };
+      const { png, caption } = await renderScheduleGridImage(sessions);
       return { __photo: png, __caption: caption, count: sessions.length };
     }
     case "send_assignments_image": {
