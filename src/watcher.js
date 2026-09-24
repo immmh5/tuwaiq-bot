@@ -40,7 +40,8 @@ const normalize = {
 
 const SCOPES = ["assignments", "materials", "exams", "grades"];
 
-let running = false;
+let running = false;   // is the scheduler itself up?
+let checking = false;  // is a check in flight? (re-entry guard)
 let lastCheck = null;
 let lastError = null;
 let consecutiveFailures = 0;
@@ -131,8 +132,8 @@ export async function fetchScope(scope, accessToken) {
 }
 
 export async function runCheckOnce() {
-  if (running) return { skipped: true };
-  running = true;
+  if (checking) return { skipped: true };
+  checking = true;
   try {
     let accessToken = await ensureValidTokens();
     const config = await getKv("watch_config", {
@@ -193,7 +194,7 @@ export async function runCheckOnce() {
     }
     return { ok: false, error: err.message };
   } finally {
-    running = false;
+    checking = false;
   }
 }
 
@@ -371,6 +372,11 @@ export async function getCheckIntervalMinutes() {
 export async function startWatcher() {
   if (timer) return;
   const intervalMin = await getCheckIntervalMinutes();
+  // running tracks the scheduler itself, not an in-flight check, so it is
+  // set here and only cleared on stop — reporting it from inside the check
+  // made the health endpoint say the watcher was off whenever the last
+  // check bailed early.
+  running = true;
   const run = async () => {
     try {
       await runCheckOnce();
@@ -394,4 +400,5 @@ export async function restartWatcher() {
 export function stopWatcher() {
   if (timer) clearInterval(timer);
   timer = null;
+  running = false;
 }
