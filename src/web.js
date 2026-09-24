@@ -15,7 +15,7 @@ import {
 } from "./store.js";
 import { login, decodeToken } from "./auth.js";
 import { runCheckOnce, getWatcherState, startWatcher, stopWatcher } from "./watcher.js";
-import { sendMessage } from "./telegram.js";
+import { sendMessage, isPolling, startWatchdog } from "./telegram.js";
 
 // Lightweight Telegram reachability check: tries to reach the chat without
 // posting anything visible (getChat works for private chats the bot knows).
@@ -225,6 +225,8 @@ export function createWebApp() {
       config,
       seen,
       telegramOk,
+      // Surface the poll loop's liveness — "up" and "listening" differ.
+      polling: isPolling(),
       watcher: getWatcherState(),
       intervalMin: Number(process.env.CHECK_INTERVAL_MIN) || 10,
     });

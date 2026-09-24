@@ -121,18 +121,15 @@ export async function startPolling() {
         handleMessage(u);
       }
     } catch (err) {
-      // Two pollers on the same token fight forever. Back off progressively so
-      // the losing instance doesn't hammer the API; after repeated 409s it
-      // stops polling entirely and the surviving instance takes over cleanly.
+      // Two pollers on the same token fight. Back off progressively, but
+      // never permanently give up — the loop heals itself once the stale
+      // instance is gone, which is what keeps the bot responsive.
       if (/409|Conflict/.test(err.message)) {
         conflicts++;
         console.error(`telegram poll conflict (${conflicts}) — another instance may be running`);
-        if (conflicts >= 6) {
-          console.error("too many poll conflicts; this instance stops polling");
-          polling = false;
-          return;
-        }
-        await sleep(5000 * conflicts);
+        const backoff = Math.min(5000 * conflicts, 30000);
+        await sleep(backoff);
+        conflicts = 0; // forgive; a transient burst shouldn't kill the bot
         continue;
       }
       console.error("telegram poll error:", err.message);
@@ -145,13 +142,36 @@ export function stopPolling() {
   polling = false;
 }
 
+// Is the poll loop currently alive? Exposed for /health so the student can
+// tell "bot is up" from "bot is running but deaf".
+export function isPolling() {
+  return polling;
+}
+
+// Self-healing watchdog: if the poll loop ever exits (crash, OOM kill of the
+// task, unrecoverable error), this restarts it within a minute. Without it
+// the bot silently goes deaf and stays deaf until a redeploy.
+export function startWatchdog() {
+  if (watchdog) return;
+  watchdog = setInterval(() => {
+    if (!polling && token) {
+      console.error("poll loop died — watchdog restarting it");
+      startPolling().catch((e) => console.error("watchdog restart failed:", e.message));
+    }
+  }, 60000);
+}
+
+let watchdog = null;
+
 async function getUpdates(offsetValue, timeout) {
   const url = new URL(`${API}/bot${token}/getUpdates`);
   url.searchParams.set("offset", String(offsetValue));
   url.searchParams.set("timeout", String(timeout));
   url.searchParams.set("allowed_updates", JSON.stringify(["message"]));
-  const res = await globalThis.fetch(url, { method: "GET" });
-  const data = await res.json();
+  // Must go through the curl transport: raw fetch cannot reliably reach
+  // api.telegram.org from the container, and a failed long-poll silently
+  // kills the loop — the bot then ignores every message until restart.
+  const data = await fetchJson(url.toString(), { method: "GET", timeout: timeout + 20 });
   if (!data.ok) throw new Error(`getUpdates: ${JSON.stringify(data).slice(0, 150)}`);
   return data.result;
 }
@@ -196,7 +216,13 @@ function handleMessage(update) {
     ).catch(() => {});
   } else {
     // Free text → the AI layer (if enabled). Keeps the command UX untouched.
-    aiHandler?.({ chatId, text }).catch(() => {});
+    // A swallowed error here presents as "ثواني…" then silence, so report it.
+    Promise.resolve(aiHandler?.({ chatId, text })).catch((err) => {
+      sendMessage(
+        chatId,
+        `⚠️ انقطع الجواب: <code>${escapeHtml(String(err.message || err)).slice(0, 200)}</code>\n\n<i>جرّب مرة ثانية.</i>`
+      ).catch(() => {});
+    });
   }
 }
 

@@ -18,7 +18,7 @@ import {
   escapeHtml as esc,
 } from "./format.js";
 import { askAI, aiConfig, isAIEnabled } from "./ai.js";
-import { setAIHandler, sendPhoto } from "./telegram.js";
+import { setAIHandler, sendPhoto, isPolling, startWatchdog } from "./telegram.js";
 import { remember, recentContext, getHistory, clear as clearMemory } from "./memory.js";
 
 const PORT = process.env.PORT || 3000;
@@ -48,7 +48,15 @@ async function answerWithAI(chatId, question) {
   await sendMessage(chatId, "🤖 ثواني…").catch(() => {});
   try {
     const history = recentContext(chatId);
-    const res = await askAI(question, { accessToken: tokens.accessToken, history });
+    // Cap the whole agent run: a hung model otherwise leaves the student
+    // staring at "ثواني…" forever. Two minutes is generous for a multi-tool
+    // answer and still tells them something went wrong.
+    const res = await Promise.race([
+      askAI(question, { accessToken: tokens.accessToken, history }),
+      new Promise((_, rej) =>
+        setTimeout(() => rej(new Error("انتهى وقت الجواب (دقيقتين)")), 120000)
+      ),
+    ]);
     // Image tools return a PNG alongside (or instead of) the text.
     // Surface failures instead of swallowing them — otherwise the model
     // cheerfully claims the image was sent while nothing arrived.
@@ -642,6 +650,9 @@ async function mainWithRetry() {
         await answerWithAI(chatId, text);
       });
       startPolling();
+      // If the poll loop ever dies (conflict, OOM, crash), restart it within
+      // a minute instead of going deaf until the next deploy.
+      startWatchdog();
       console.log("telegram bot started");
     } else {
       console.warn("TELEGRAM_BOT_TOKEN missing — notifications disabled until set");
