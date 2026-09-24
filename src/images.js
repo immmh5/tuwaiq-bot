@@ -198,13 +198,25 @@ export async function renderScheduleGridImage(sessions, opts = {}) {
   const W = 1180;
   const nX = daysTop ? days.length : slots.length;
   const nY = daysTop ? slots.length : days.length;
-  const gridW = W - PAD * 2 - GUTTER;
-  const cellW = gridW / nX;
   // Every cell gets the same height, so a day with many classes never
   // squeezes its cards shorter than their text.
   const ROW_H = 92;
   const gridH = ROW_H * nY;
   const h = TITLE_H + HEAD_H + gridH + PAD;
+
+  // Direction is a real flip, not just column order:
+  //  - the time/day gutter sits on the right in rtl, on the left in ltr
+  //  - text inside a card starts from the matching edge and runs that way
+  const DIR = rtl ? "rtl" : "ltr";
+  const gutterX = rtl ? W - PAD - GUTTER : PAD;
+  const gridX0 = rtl ? PAD : PAD + GUTTER;
+  const gridX1 = rtl ? W - PAD - GUTTER : W - PAD;
+  const gridW2 = gridX1 - gridX0;
+  const cellW2 = gridW2 / nX;
+  // Card text anchor: rtl starts at the right edge of the card, ltr at the
+  // left, so the label hugs its own side of the table in both modes.
+  const textAnchor = rtl ? "end" : "start";
+  const textX = (cx, pad) => (rtl ? cx + cellW2 - pad : cx + pad);
 
   const parts = [];
 
@@ -212,34 +224,34 @@ export async function renderScheduleGridImage(sessions, opts = {}) {
   if (daysTop) {
     for (let i = 0; i < days.length; i++) {
       const isToday = days[i] === today;
-      const cx = PAD + GUTTER + colRank(i) * cellW + cellW / 2;
-      if (isToday) parts.push(`<rect x="${cx - cellW / 2 + 2}" y="${TITLE_H}" width="${cellW - 6}" height="${HEAD_H - 8}" rx="10" fill="#7c5cbf1f"/>`);
-      parts.push(`<text x="${cx}" y="${TITLE_H + 30}" font-family="${ARABIC_FONT}" font-size="19" font-weight="800" fill="${isToday ? "#7c5cbf" : "#2c2540"}" text-anchor="middle" direction="${rtl ? "rtl" : "ltr"}">${esc(fmtDayName(days[i]).split(" ")[0])}</text>`);
+      const cx = gridX0 + colRank(i) * cellW2 + cellW2 / 2;
+      if (isToday) parts.push(`<rect x="${cx - cellW2 / 2 + 2}" y="${TITLE_H}" width="${cellW2 - 6}" height="${HEAD_H - 8}" rx="10" fill="#7c5cbf1f"/>`);
+      parts.push(`<text x="${cx}" y="${TITLE_H + 30}" font-family="${ARABIC_FONT}" font-size="19" font-weight="800" fill="${isToday ? "#7c5cbf" : "#2c2540"}" text-anchor="middle" direction="${DIR}">${esc(fmtDayName(days[i]).split(" ")[0])}</text>`);
     }
     for (let j = 0; j < slots.length; j++) {
-      parts.push(`<text x="${PAD + GUTTER - 12}" y="${TITLE_H + HEAD_H + j * ROW_H + ROW_H / 2 + 5}" font-family="${ARABIC_FONT}" font-size="15" fill="#8a8798" text-anchor="end" direction="rtl">${fmtSlot(slots[j])}</text>`);
+      parts.push(`<text x="${rtl ? gutterX + GUTTER - 12 : gutterX + GUTTER - 12}" y="${TITLE_H + HEAD_H + j * ROW_H + ROW_H / 2 + 5}" font-family="${ARABIC_FONT}" font-size="15" fill="#8a8798" text-anchor="${textAnchor}" direction="${DIR}">${fmtSlot(slots[j])}</text>`);
     }
   } else {
     for (let j = 0; j < slots.length; j++) {
-      const cx = PAD + GUTTER + colRank(j) * cellW + cellW / 2;
-      parts.push(`<text x="${cx}" y="${TITLE_H + 30}" font-family="${ARABIC_FONT}" font-size="15" fill="#8a8798" text-anchor="middle" direction="rtl">${fmtSlot(slots[j])}</text>`);
+      const cx = gridX0 + colRank(j) * cellW2 + cellW2 / 2;
+      parts.push(`<text x="${cx}" y="${TITLE_H + 30}" font-family="${ARABIC_FONT}" font-size="15" fill="#8a8798" text-anchor="middle" direction="${DIR}">${fmtSlot(slots[j])}</text>`);
     }
     for (let i = 0; i < days.length; i++) {
       const isToday = days[i] === today;
       const ry = TITLE_H + HEAD_H + i * ROW_H;
       if (isToday) parts.push(`<rect x="${PAD}" y="${ry}" width="${W - PAD * 2}" height="${ROW_H - 4}" fill="#7c5cbf1f"/>`);
-      parts.push(`<text x="${PAD + GUTTER - 12}" y="${ry + ROW_H / 2 + 6}" font-family="${ARABIC_FONT}" font-size="18" font-weight="800" fill="${isToday ? "#7c5cbf" : "#2c2540"}" text-anchor="end" direction="rtl">${esc(fmtDayName(days[i]).split(" ")[0])}</text>`);
+      parts.push(`<text x="${gutterX + GUTTER - 12}" y="${ry + ROW_H / 2 + 6}" font-family="${ARABIC_FONT}" font-size="18" font-weight="800" fill="${isToday ? "#7c5cbf" : "#2c2540"}" text-anchor="${textAnchor}" direction="${DIR}">${esc(fmtDayName(days[i]).split(" ")[0])}</text>`);
     }
   }
 
   // Faint cell separators, behind the cards
   for (let i = 0; i <= nX; i++) {
-    const lx = PAD + GUTTER + i * cellW;
+    const lx = gridX0 + i * cellW2;
     parts.push(`<line x1="${lx}" y1="${TITLE_H + HEAD_H}" x2="${lx}" y2="${TITLE_H + HEAD_H + gridH}" stroke="rgba(124,92,191,.10)" stroke-width="1"/>`);
   }
   for (let j = 0; j <= nY; j++) {
     const ly = TITLE_H + HEAD_H + j * ROW_H;
-    parts.push(`<line x1="${PAD + GUTTER}" y1="${ly}" x2="${W - PAD}" y2="${ly}" stroke="rgba(124,92,191,.10)" stroke-width="1"/>`);
+    parts.push(`<line x1="${gridX0}" y1="${ly}" x2="${gridX1}" y2="${ly}" stroke="rgba(124,92,191,.10)" stroke-width="1"/>`);
   }
 
   // A cell holds its classes. Two real classes in one slot (the student
@@ -284,7 +296,7 @@ export async function renderScheduleGridImage(sessions, opts = {}) {
 
   for (const [, items] of byCell) {
     const c = cellOf(items[0]);
-    const cx = PAD + GUTTER + c.x * cellW;
+    const cx = gridX0 + c.x * cellW2;
     const cy0 = TITLE_H + HEAD_H + c.y * ROW_H;
     const n = items.length;
     const subH = n > 1 ? (ROW_H - 8 - (n - 1) * 6) / n : ROW_H - 8;
@@ -292,7 +304,7 @@ export async function renderScheduleGridImage(sessions, opts = {}) {
     const draw = (s, idx) => {
       const cy = cy0 + 4 + idx * (subH + 6);
       const t = colorFor(s);
-      const innerW = cellW - 14;
+      const innerW = cellW2 - 14;
       parts.push(`<rect x="${cx + 3}" y="${cy}" width="${innerW}" height="${subH}" rx="10" fill="${t.soft}"/>`);
       parts.push(`<rect x="${cx + 3.75}" y="${cy + 0.75}" width="${innerW - 1.5}" height="${subH - 1.5}" rx="9.25" fill="none" stroke="${t.ink}" stroke-opacity="0.32" stroke-width="1"/>`);
 
@@ -300,20 +312,22 @@ export async function renderScheduleGridImage(sessions, opts = {}) {
       const lineH = 19;
       const textTop = cy + (subH - lines.length * lineH) / 2 + 14;
       lines.forEach((ln, li) => {
-        parts.push(`<text x="${cx + 10}" y="${textTop + li * lineH}" font-family="${ARABIC_FONT}" font-size="15" font-weight="800" fill="#2c2540" direction="rtl">${esc(ln)}</text>`);
+        // Text hugs the matching edge of its own card and runs in the
+        // table's direction, so a flipped table reads naturally.
+        parts.push(`<text x="${textX(cx, 10)}" y="${textTop + li * lineH}" font-family="${ARABIC_FONT}" font-size="15" font-weight="800" fill="#2c2540" text-anchor="${textAnchor}" direction="${DIR}">${esc(ln)}</text>`);
       });
       if (showRoom && s.room && subH > 54 && n === 1) {
-        parts.push(`<text x="${cx + 10}" y="${cy + subH - 10}" font-family="${ARABIC_FONT}" font-size="12" fill="#2c2540" fill-opacity="0.72" direction="rtl">${esc(s.room)}</text>`);
+        parts.push(`<text x="${textX(cx, 10)}" y="${cy + subH - 10}" font-family="${ARABIC_FONT}" font-size="12" fill="#2c2540" fill-opacity="0.72" text-anchor="${textAnchor}" direction="${DIR}">${esc(s.room)}</text>`);
       }
     };
 
     items.forEach((s, i) => draw(s, i));
   }
 
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${h}" direction="rtl">
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${h}" direction="${DIR}">
     <rect width="${W}" height="${h}" fill="#ffffff"/>
-    <text x="${W / 2}" y="38" font-family="${ARABIC_FONT}" font-size="26" font-weight="700" fill="#2c2540" text-anchor="middle" direction="rtl">🗓 جدولي الأسبوعي</text>
-    <text x="${W / 2}" y="66" font-family="${ARABIC_FONT}" font-size="15" fill="#8a8798" text-anchor="middle" direction="rtl">جدولك الفعلي لهذا الأسبوع</text>
+    <text x="${W / 2}" y="38" font-family="${ARABIC_FONT}" font-size="26" font-weight="700" fill="#2c2540" text-anchor="middle" direction="${DIR}">🗓 جدولي الأسبوعي</text>
+    <text x="${W / 2}" y="66" font-family="${ARABIC_FONT}" font-size="15" fill="#8a8798" text-anchor="middle" direction="${DIR}">جدولك الفعلي لهذا الأسبوع</text>
     ${parts.join("\n")}
   </svg>`;
   // Self-diagnosis: the renderer reports what it actually drew, so the bot
