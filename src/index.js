@@ -2,7 +2,25 @@
 import express from "express";
 import { initStore, getKv, setKv, getCredentials, resetSeen, listSeen, getTokens } from "./store.js";
 import { createWebApp } from "./web.js";
-import { setTelegramToken, on, startPolling, sendMessage, escapeHtml, editMessageText } from "./telegram.js";
+import {
+  setTelegramToken,
+  on,
+  startPolling,
+  sendMessage,
+  escapeHtml,
+  editMessageText,
+  sendButtons,
+  editMessage,
+  answerCallbackQuery,
+  onCallback,
+} from "./telegram.js";
+import {
+  getSettings,
+  setSetting,
+  cycleSetting,
+  LABELS,
+  SETTING_NAMES,
+} from "./settings.js";
 import { runCheckOnce, getWatcherState, startWatcher, notifyOwner, fetchScope } from "./watcher.js";
 import { getMyAssignments, getStudentHome, getUnreadCount, getMyAttendance, normalizeAssignments } from "./tuwaiq.js";
 import {
@@ -106,6 +124,89 @@ async function main() {
 }
 
 function registerCommands() {
+  // ---- Settings panel ------------------------------------------------------
+  // The student drives the bot by tapping instead of typing. The panel reads
+  // its values from the per-chat settings store, and every button re-renders
+  // the same message in place, so the menu never scrolls the chat away.
+  function settingsRows(cfg) {
+    const rowFor = (name) => [
+      {
+        label: LABELS[name][String(cfg[name])] || String(cfg[name]),
+        action: `set:${name}`,
+      },
+    ];
+    return [
+      rowFor("schedule_orientation"),
+      rowFor("schedule_show_room"),
+      rowFor("notify_digest"),
+      [{ label: "⛔ إغلاق", action: "close" }],
+    ];
+  }
+
+  function settingsText(cfg) {
+    return [
+      "<b>⚙️ الإعدادات</b>",
+      "",
+      "🗓 <b>الجدول</b>",
+      `الاتجاه: ${LABELS.schedule_orientation[String(cfg.schedule_orientation)]}`,
+      `القاعة: ${cfg.schedule_show_room ? "ظاهرة" : "مخفية"}`,
+      "",
+      "🔔 <b>التنبيهات</b>",
+      `النوع: ${cfg.notify_digest ? "مجمّعة في رسالة" : "كل عنصر لحاله"}`,
+      `التذكير قبل: ${cfg.remind_hours} ساعة`,
+      "",
+      "<i>اضغط أي زر عشان تغيره — التغيير فوري.</i>",
+    ].join("\n");
+  }
+
+  on("/settings", async ({ chatId }) => {
+    const cfg = await getSettings(chatId);
+    await sendButtons(chatId, settingsText(cfg), settingsRows(cfg));
+  });
+
+  // A button press. The action carries the setting name; the handler cycles
+  // to the next allowed value and rewrites the panel.
+  onCallback("set", async ({ chatId, messageId, arg, queryId }) => {
+    if (!SETTING_NAMES.includes(arg)) {
+      await answerCallbackQuery(queryId, "❓ إعداد غير معروف");
+      return;
+    }
+    const cfg = await cycleSetting(chatId, arg);
+    await editMessage(messageId, chatId, settingsText(cfg), settingsRows(cfg));
+    await answerCallbackQuery(queryId, `✅ ${LABELS[arg][String(cfg[arg])]}`);
+  });
+
+  onCallback("close", async ({ chatId, messageId, queryId }) => {
+    await editMessage(messageId, chatId, "✅ تم. تقدر تفتحها أي وقت بـ <code>/settings</code>", null);
+    await answerCallbackQuery(queryId, "");
+  });
+
+  onCallback("open_settings", async ({ chatId, queryId }) => {
+    const cfg = await getSettings(chatId);
+    await sendButtons(chatId, settingsText(cfg), settingsRows(cfg));
+    await answerCallbackQuery(queryId, "");
+  });
+
+  // Quick actions row attached to the schedule image — the student sees the
+  // table and can flip its orientation without leaving the chat.
+  onCallback("flip", async ({ chatId, messageId, arg, queryId }) => {
+    const cfg = await getSettings(chatId);
+    const next = cfg.schedule_orientation === "days_top" ? "days_left" : "days_top";
+    await setSetting(chatId, "schedule_orientation", next);
+    await answerCallbackQuery(queryId, `✅ ${LABELS.schedule_orientation[next]}`);
+    // Re-render and send the new image.
+    const tokens = await getTokens();
+    const items = (await fetchScope("schedule", tokens.accessToken)).filter(
+      (s) => String(s.status || "").toLowerCase() !== "cancelled"
+    );
+    const { renderScheduleGridImage } = await import("./images.js");
+    const out = await renderScheduleGridImage(items, {
+      orientation: next,
+      showRoom: cfg.schedule_show_room !== false,
+    });
+    await sendPhoto(chatId, out.png, `${out.caption} — ${LABELS.schedule_orientation[next]}`);
+  });
+
   on("/status", async ({ chatId }) => {
     if (!(await requireLogin(chatId))) return;
     const state = getWatcherState();
@@ -711,7 +812,19 @@ function registerCommands() {
           await sendMessage(chatId, "ما في بيانات للجدول الحين.");
           return;
         }
-        await sendPhoto(chatId, (await renderScheduleGridImage(items)).png, "🗓 جدولك — نفس تخطيط المنصة");
+        // Honour the student's chosen orientation and room visibility.
+        const cfg = await getSettings(chatId);
+        const live = items.filter((s) => String(s.status || "").toLowerCase() !== "cancelled");
+        const out = await renderScheduleGridImage(live, {
+          orientation: cfg.schedule_orientation,
+          showRoom: cfg.schedule_show_room !== false,
+        });
+        await sendPhoto(chatId, out.png, out.caption);
+        // Then a small control row so the table can be flipped in place.
+        await sendButtons(chatId, "أو تتحكم بالجدول من هنا:", [
+          [{ label: "🔄 اقلب الاتجاه", action: "flip" }],
+          [{ label: "⚙️ كل الإعدادات", action: "open_settings" }],
+        ]);
         return;
       }
       await sendMessage(chatId, STEP[scope] || "📸 أجهّز صورتك…").catch(() => {});
@@ -794,6 +907,7 @@ const HELP_TEXT = `<b>🤖 أوامر بوت طويق</b>
 <b>التحكم:</b>
 /status — حالة البوت
 /check — فحص فوري
+/settings — ⚙️ لوحة الإعدادات (أزرار)
 /watch assignments on|off — تشغيل/إيقاف مراقبة نطاق
 /interval 15 — تغيير دقيقة الفحص
 /seen — آخر ما رُصد

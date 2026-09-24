@@ -140,7 +140,8 @@ export async function startPolling() {
       conflicts = 0;
       for (const u of updates) {
         offset = u.update_id + 1;
-        handleMessage(u);
+        if (u.callback_query) handleCallback(u);
+        else handleMessage(u);
       }
     } catch (err) {
       // Two pollers on the same token fight. Back off progressively, but
@@ -189,7 +190,7 @@ async function getUpdates(offsetValue, timeout) {
   const url = new URL(`${API}/bot${token}/getUpdates`);
   url.searchParams.set("offset", String(offsetValue));
   url.searchParams.set("timeout", String(timeout));
-  url.searchParams.set("allowed_updates", JSON.stringify(["message"]));
+  url.searchParams.set("allowed_updates", JSON.stringify(["message", "callback_query"]));
   // Must go through the curl transport: raw fetch cannot reliably reach
   // api.telegram.org from the container, and a failed long-poll silently
   // kills the loop — the bot then ignores every message until restart.
@@ -252,6 +253,116 @@ function handleMessage(update) {
 export let aiHandler = null;
 export function setAIHandler(fn) {
   aiHandler = fn;
+}
+
+// ---- Inline buttons ---------------------------------------------------------
+// Telegram "callback" buttons: a press sends an update the bot answers. The
+// settings panel and quick actions ride on this so the student drives the
+// bot by tapping instead of typing commands.
+const callbackHandlers = new Map();
+
+export function onCallback(action, fn) {
+  callbackHandlers.set(action, fn);
+}
+
+export async function answerCallbackQuery(callbackQueryId, text = "") {
+  if (!token) throw new Error("TELEGRAM_BOT_TOKEN not set");
+  const res = await globalThis.fetch(`${API}/bot${token}/answerCallbackQuery`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ callback_query_id: callbackQueryId, text, show_alert: false }),
+  });
+  const data = await res.json();
+  if (!data.ok) throw new Error(`telegram error: ${JSON.stringify(data).slice(0, 200)}`);
+  return data.result;
+}
+
+// Send a message with inline buttons. rows is an array of rows, each a list
+// of { label, action } — action lands in callback_query.data on tap.
+export async function sendButtons(chatId, text, rows, extra = {}) {
+  if (!token) throw new Error("TELEGRAM_BOT_TOKEN not set");
+  const reply_markup = {
+    inline_keyboard: rows.map((row) =>
+      row.map((b) => ({
+        text: b.label,
+        callback_data: String(b.action).slice(0, 64),
+      }))
+    ),
+  };
+  const body = {
+    chat_id: chatId,
+    text,
+    parse_mode: "HTML",
+    disable_web_page_preview: true,
+    reply_markup,
+    ...extra,
+  };
+  const res = await globalThis.fetch(`${API}/bot${token}/sendMessage`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json();
+  if (!data.ok) throw new Error(`telegram error: ${JSON.stringify(data).slice(0, 200)}`);
+  return data.result;
+}
+
+// Rewrite an existing message's text and buttons together.
+export async function editMessage(messageId, chatId, text, rows) {
+  if (!token) throw new Error("TELEGRAM_BOT_TOKEN not set");
+  const reply_markup = rows
+    ? {
+        inline_keyboard: rows.map((row) =>
+          row.map((b) => ({
+            text: b.label,
+            callback_data: String(b.action).slice(0, 64),
+          }))
+        ),
+      }
+    : undefined;
+  const res = await globalThis.fetch(`${API}/bot${token}/editMessageText`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      chat_id: chatId,
+      message_id: messageId,
+      text,
+      parse_mode: "HTML",
+      disable_web_page_preview: true,
+      ...(reply_markup ? { reply_markup } : {}),
+    }),
+  });
+  const data = await res.json();
+  if (!data.ok) throw new Error(`telegram error: ${JSON.stringify(data).slice(0, 200)}`);
+  return data.result;
+}
+
+function handleCallback(update) {
+  const cq = update.callback_query;
+  if (!cq) return;
+  const chatId = cq.message?.chat?.id;
+  const data = cq.data || "";
+  const messageId = cq.message?.message_id;
+
+  const allowed = process.env.TELEGRAM_CHAT_ID
+    ? String(chatId) === String(process.env.TELEGRAM_CHAT_ID)
+    : true;
+  if (!allowed) {
+    answerCallbackQuery(cq.id, "🚫 غير مسموح").catch(() => {});
+    return;
+  }
+
+  // callback_data carries an optional argument: "action:value".
+  const [action, ...rest] = data.split(":");
+  const fn = callbackHandlers.get(action);
+  if (fn) {
+    Promise.resolve(fn({ chatId, messageId, arg: rest.join(":"), queryId: cq.id }))
+      .catch((err) => {
+        answerCallbackQuery(cq.id, "⚠️ " + String(err.message).slice(0, 180)).catch(() => {});
+      });
+  } else {
+    answerCallbackQuery(cq.id, "❓ ما أعرف هذا الزر").catch(() => {});
+  }
 }
 
 function printHelp(chatId) {

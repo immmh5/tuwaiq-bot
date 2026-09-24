@@ -108,8 +108,12 @@ function header(title, subtitle) {
 // renders a substitution as two cards stacked in the same slot — the
 // cancelled original pale, its replacement bold — and this reproduces that
 // exactly, so the image is the page's grid and not a re-interpretation.
-export async function renderScheduleGridImage(sessions) {
+export async function renderScheduleGridImage(sessions, opts = {}) {
   const today = new Date().toISOString().slice(0, 10);
+  // opts.orientation: "days_top" (the site's layout) or "days_left".
+  // opts.showRoom: draw the room under each class.
+  const orientation = opts.orientation === "days_left" ? "days_left" : "days_top";
+  const showRoom = opts.showRoom !== false;
   const toMin = (t) => {
     const [h, m] = String(t || "0:0").split(":").map(Number);
     return (h || 0) * 60 + (m || 0);
@@ -153,46 +157,77 @@ export async function renderScheduleGridImage(sessions) {
   const colorFor = (s) => TINTS[(subjTint.get(s.subject) ?? 0) % TINTS.length];
 
   const PAD = 28;
-  const LABEL = 84; // right-side gutter for the time axis (RTL)
-  const CW = Math.floor((1000 - PAD * 2 - LABEL) / days.length);
+  const LABEL = 84; // gutter for the time axis
+
+  // Two orientations share one renderer:
+  //   days_top  — days across the top, times down the left (the site's own
+  //               layout, and the default)
+  //   days_left — days down the left side, times across the top
+  const daysTop = orientation === "days_top";
+  const W = 1000;
+  const w = W;
+  const CW = Math.floor((W - PAD * 2 - LABEL) / days.length);
 
   // Vertical axis: one minute of class time maps to a fixed number of
-  // pixels, exactly like the site's 45-min = 67.5px grid. The whole grid
-  // stretches to fit the week's earliest start and latest end.
+  // pixels, exactly like the site's 45-min = 67.5px grid.
   // Three stacked bands, each with its own clear space:
   //   title block → day headers → grid.
   // Earlier the today-highlight rect started at y=36 and ran into the title,
   // which is what showed up as an empty box floating above the table.
   const TITLE_H = 76;
-  const HEAD_H = 56;
+  const HEAD_H = daysTop ? 56 : 40;
   const TOP = TITLE_H + HEAD_H + 6;
   const PPM = 1.5; // px per minute (45 min → 67.5px, the site's own scale)
-  const h = TOP + SPAN * PPM + 70;
-
-  const xOf = (i) => PAD + LABEL + i * CW;
-  const w = 1000;
+  // days_left gives each day its own horizontal band; the band height is
+  // fixed so all five rows fit comfortably.
+  const rowH = 104;
+  const h = daysTop
+    ? TOP + SPAN * PPM + 70
+    : TOP + days.length * rowH + PAD;
 
   const parts = [];
-  // Hour rules and labels, every full hour the grid spans
   const firstH = Math.floor(lo / 60);
   const lastH = Math.ceil(hi / 60);
-  for (let hh = firstH; hh <= lastH; hh++) {
-    const y = TOP + (hh * 60 - lo) * PPM;
-    parts.push(`<line x1="${PAD}" y1="${y}" x2="${w - PAD}" y2="${y}" stroke="rgba(124,92,191,.14)" stroke-width="1"/>`);
-    parts.push(
-      `<text x="${PAD + LABEL - 14}" y="${y + 5}" font-family="${ARABIC_FONT}" font-size="16" fill="#8a8798" text-anchor="end" direction="rtl">${hh}:00</text>`
-    );
+  const hourW = Math.floor((w - PAD * 2 - LABEL) / Math.max(lastH - firstH, 1));
+
+  if (daysTop) {
+    // Hour rules down the left gutter, like the page's own axis
+    for (let hh = firstH; hh <= lastH; hh++) {
+      const y = TOP + (hh * 60 - lo) * PPM;
+      parts.push(`<line x1="${PAD}" y1="${y}" x2="${w - PAD}" y2="${y}" stroke="rgba(124,92,191,.14)" stroke-width="1"/>`);
+      parts.push(
+        `<text x="${PAD + LABEL - 14}" y="${y + 5}" font-family="${ARABIC_FONT}" font-size="16" fill="#8a8798" text-anchor="end" direction="rtl">${hh}:00</text>`
+      );
+    }
+  } else {
+    // Days_left: hours across the top, days down the left
+    for (let hh = firstH; hh <= lastH; hh++) {
+      const x = PAD + LABEL + (hh - firstH) * hourW;
+      parts.push(`<line x1="${x}" y1="${TOP}" x2="${x}" y2="${h - PAD}" stroke="rgba(124,92,191,.14)" stroke-width="1"/>`);
+      parts.push(
+        `<text x="${x + hourW / 2}" y="${TITLE_H + HEAD_H - 12}" font-family="${ARABIC_FONT}" font-size="16" fill="#8a8798" text-anchor="middle" direction="rtl">${hh}:00</text>`
+      );
+    }
   }
 
   // Day headers, today highlighted like the site's .is-today gradient
   for (let i = 0; i < days.length; i++) {
-    const x = xOf(i);
+    const x = PAD + LABEL + i * CW;
     const isToday = days[i] === today;
-    if (isToday) parts.push(`<rect x="${x}" y="${TITLE_H}" width="${CW - 6}" height="${HEAD_H - 4}" rx="10" fill="#7c5cbf1f"/>`);
-    parts.push(`<line x1="${x}" y1="${TITLE_H + HEAD_H - 4}" x2="${x + CW - 6}" y2="${TITLE_H + HEAD_H - 4}" stroke="rgba(124,92,191,.14)" stroke-width="1"/>`);
-    parts.push(
-      `<text x="${x + CW / 2 - 3}" y="${TITLE_H + 26}" font-family="${ARABIC_FONT}" font-size="20" font-weight="800" fill="${isToday ? "#7c5cbf" : "#2c2540"}" text-anchor="middle" direction="rtl">${esc(fmtDayName(days[i]).split(" ")[0])}</text>`
-    );
+    if (daysTop) {
+      if (isToday) parts.push(`<rect x="${x}" y="${TITLE_H}" width="${CW - 6}" height="${HEAD_H - 4}" rx="10" fill="#7c5cbf1f"/>`);
+      parts.push(`<line x1="${x}" y1="${TITLE_H + HEAD_H - 4}" x2="${x + CW - 6}" y2="${TITLE_H + HEAD_H - 4}" stroke="rgba(124,92,191,.14)" stroke-width="1"/>`);
+      parts.push(
+        `<text x="${x + CW / 2 - 3}" y="${TITLE_H + 26}" font-family="${ARABIC_FONT}" font-size="20" font-weight="800" fill="${isToday ? "#7c5cbf" : "#2c2540"}" text-anchor="middle" direction="rtl">${esc(fmtDayName(days[i]).split(" ")[0])}</text>`
+      );
+    } else {
+      // days_left: day name sits in the left gutter beside its row
+      const rowY = TOP + i * rowH;
+      if (isToday) parts.push(`<rect x="${PAD}" y="${rowY}" width="${w - PAD * 2}" height="${rowH - 4}" fill="#7c5cbf1f"/>`);
+      parts.push(
+        `<text x="${PAD + LABEL - 14}" y="${rowY + rowH / 2 + 7}" font-family="${ARABIC_FONT}" font-size="18" font-weight="800" fill="${isToday ? "#7c5cbf" : "#2c2540"}" text-anchor="end" direction="rtl">${esc(fmtDayName(days[i]).split(" ")[0])}</text>`
+      );
+    }
   }
 
   // Group per day+slot. Overlapping sessions in one slot — the cancelled
@@ -209,9 +244,15 @@ export async function renderScheduleGridImage(sessions) {
   for (const [, items] of bySlot) {
     const s0 = items[0];
     const col = days.indexOf(s0.day);
-    const x = xOf(col);
-    const yTop = TOP + (s0.startMin - lo) * PPM + 2;
-    const cardH = Math.max((s0.endMin - s0.startMin) * PPM - 4, 44);
+    // days_top: x is the day column, y is the time. days_left swaps them.
+    const x = daysTop ? PAD + LABEL + col * CW : PAD + LABEL + (s0.startMin - lo) / SPAN * (w - PAD * 2 - LABEL);
+    const yTop = daysTop ? TOP + (s0.startMin - lo) * PPM + 2 : TOP + col * rowH + 6;
+    const cardH = daysTop
+      ? Math.max((s0.endMin - s0.startMin) * PPM - 4, 44)
+      : rowH - 14;
+    const cardW = daysTop
+      ? CW - 12
+      : Math.max(((s0.endMin - s0.startMin) / SPAN) * (w - PAD * 2 - LABEL) - 8, 70);
     const n = items.length;
 
     // Two real classes can genuinely share a slot — a student taking both
@@ -227,13 +268,13 @@ export async function renderScheduleGridImage(sessions) {
       const cy = yTop + idx * (subH + 4);
       const t = colorFor(s);
       const time = fmtClock(s.startTime);
-      parts.push(`<rect x="${x + 3}" y="${cy}" width="${CW - 12}" height="${subH}" rx="11" fill="${t.soft}"/>`);
-      parts.push(`<rect x="${x + 3.75}" y="${cy + 0.75}" width="${CW - 13.5}" height="${subH - 1.5}" rx="10.25" fill="none" stroke="${t.ink}" stroke-opacity="0.32" stroke-width="1"/>`);
+      parts.push(`<rect x="${x + 3}" y="${cy}" width="${cardW}" height="${subH}" rx="11" fill="${t.soft}"/>`);
+      parts.push(`<rect x="${x + 3.75}" y="${cy + 0.75}" width="${cardW - 1.5}" height="${subH - 1.5}" rx="10.25" fill="none" stroke="${t.ink}" stroke-opacity="0.32" stroke-width="1"/>`);
       const titleY = cy + Math.min(subH * 0.5, 22) + 4;
       parts.push(`<text x="${x + 12}" y="${titleY}" font-family="${ARABIC_FONT}" font-size="16" font-weight="800" fill="#2c2540" direction="rtl">${esc(s.title)}</text>`);
       if (subH > 44 && n === 1) {
         parts.push(
-          `<text x="${x + 12}" y="${titleY + 18}" font-family="${ARABIC_FONT}" font-size="12" fill="#2c2540" fill-opacity="0.82" direction="rtl">${esc(time)}${s.room ? " · " + esc(s.room) : ""}</text>`
+          `<text x="${x + 12}" y="${titleY + 18}" font-family="${ARABIC_FONT}" font-size="12" fill="#2c2540" fill-opacity="0.82" direction="rtl">${esc(time)}${showRoom && s.room ? " · " + esc(s.room) : ""}</text>`
         );
       }
     };
