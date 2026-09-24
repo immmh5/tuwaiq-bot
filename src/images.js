@@ -322,13 +322,14 @@ export async function renderScheduleGridImage(sessions, opts = {}) {
       const lines = wrapText(nameOf(s), innerW - 14, 15);
       const lineH = 19;
       const textTop = cy + (subH - lines.length * lineH) / 2 + 14;
+      // Centred in the card, so no side is left empty regardless of
+      // direction — a short name no longer clings to one edge.
+      const centerX = cx + 3 + innerW / 2;
       lines.forEach((ln, li) => {
-        // Text hugs the matching edge of its own card and runs in the
-        // table's direction, so a flipped table reads naturally.
-        parts.push(`<text x="${textX(cx, 10)}" y="${textTop + li * lineH}" font-family="${ARABIC_FONT}" font-size="15" font-weight="800" fill="#2c2540" text-anchor="${textAnchor}" direction="${DIR}">${esc(ln)}</text>`);
+        parts.push(`<text x="${centerX}" y="${textTop + li * lineH}" font-family="${ARABIC_FONT}" font-size="15" font-weight="800" fill="#2c2540" text-anchor="middle" direction="${DIR}">${esc(ln)}</text>`);
       });
       if (showRoom && s.room && subH > 54 && n === 1) {
-        parts.push(`<text x="${textX(cx, 10)}" y="${cy + subH - 10}" font-family="${ARABIC_FONT}" font-size="12" fill="#2c2540" fill-opacity="0.72" text-anchor="${textAnchor}" direction="${DIR}">${esc(s.room)}</text>`);
+        parts.push(`<text x="${centerX}" y="${cy + subH - 10}" font-family="${ARABIC_FONT}" font-size="12" fill="#2c2540" fill-opacity="0.72" text-anchor="middle" direction="${DIR}">${esc(s.room)}</text>`);
       }
     };
 

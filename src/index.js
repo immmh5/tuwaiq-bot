@@ -874,16 +874,16 @@ function registerCommands() {
           await sendMessage(chatId, "ما في بيانات للجدول الحين.");
           return;
         }
+        // Honour the student's chosen orientation, direction and room.
         const cfg = await getSettings(chatId);
-        const live = items
-          .filter((s) => String(s.status || "").toLowerCase() !== "cancelled")
-          // Give the renderer the fields it reads: subjectName for the card
-          // label, date/startTime/endTime for the slot, room for the meta.
-          .map((s) => ({
-            ...s,
-            subject: s.subjectName || s.title,
-            date: (s.sessionDate || "").slice(0, 10),
-          }));
+        // fetchScope("schedule") already normalises to {subject, date,
+        // startTime, endTime, room, status} — the exact fields the renderer
+        // reads. Mapping them again here looked up keys that no longer
+        // exist (sessionDate instead of date), which blanked the day and
+        // collapsed the whole week into one column.
+        const live = items.filter(
+          (s) => String(s.status || "").toLowerCase() !== "cancelled"
+        );
         const out = await renderScheduleGridImage(live, {
           orientation: cfg.schedule_orientation,
           showRoom: cfg.schedule_show_room !== false,
