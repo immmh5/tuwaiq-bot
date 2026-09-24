@@ -125,15 +125,34 @@ function registerCommands() {
 
   on("/check", async ({ chatId }) => {
     if (!(await requireLogin(chatId))) return;
-    await sendMessage(chatId, "🔍 أبدأت الفحص...");
+    await sendMessage(chatId, "🔍 أبدأت الفحص...").catch(() => {});
     const r = await runCheckOnce();
+    // Self-check the renderer too: fetch the real schedule, render it, and
+    // confirm the image actually contains every class the platform sent.
+    // The bot verifies its own output instead of waiting for the student
+    // to notice something is off.
+    let renderNote = "";
+    try {
+      const tokens = await getTokens();
+      const items = (await fetchScope("schedule", tokens.accessToken)).filter(
+        (s) => String(s.status || "").toLowerCase() !== "cancelled"
+      );
+      const { renderScheduleGridImage } = await import("./images.js");
+      const out = await renderScheduleGridImage(items);
+      const d = out.diag || {};
+      renderNote =
+        `\n🖼 الرسم: ${items.length} حصة → ${d.slots || 0} خانة` +
+        (d.stacked ? ` (${d.stacked} خانة فيها أكثر من حصة، متراصة)` : "");
+    } catch (e) {
+      renderNote = `\n🖼 الرسم: تعذّر التحقق (<code>${esc(e.message).slice(0, 80)}</code>)`;
+    }
     if (r.ok) {
       const counts = Object.entries(r.counts || {})
         .map(([k, v]) => `${k}: ${v}`)
         .join(" | ");
-      await sendMessage(chatId, `�️ تم الفحص\n${counts}\n🆕 جديد: ${r.fresh}`);
+      await sendMessage(chatId, `✅ تم الفحص\n${counts}\n🆕 جديد: ${r.fresh}${renderNote}`);
     } else {
-      await sendMessage(chatId, `❌ فشل: <code>${escapeHtml(r.error)}</code>`);
+      await sendMessage(chatId, `❌ فشل: <code>${escapeHtml(r.error)}</code>${renderNote}`);
     }
   });
 

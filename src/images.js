@@ -213,21 +213,27 @@ export async function renderScheduleGridImage(sessions) {
     const yTop = TOP + (s0.startMin - lo) * PPM + 2;
     const cardH = Math.max((s0.endMin - s0.startMin) * PPM - 4, 44);
     const n = items.length;
-    const subW = (CW - 12) / n;
+
+    // Two real classes can genuinely share a slot — a student taking both
+    // هندسة البرمجيات and تطوير البرمجيات meets at 09:45 on Sunday. The
+    // site draws them side by side in one wide card; with narrow columns
+    // the names clip, so the card splits into stacked sub-cards and each
+    // keeps the full column width.
+    const subH = n > 1 ? Math.max((cardH - (n - 1) * 4) / n, 30) : cardH;
 
     // Site-faithful card: soft fill, ink-coloured inset ring — the same
     // recipe the platform's own CSS uses for .tt-class.
     const draw = (s, idx) => {
-      const cx = x + 6 + idx * subW;
+      const cy = yTop + idx * (subH + 4);
       const t = colorFor(s);
       const time = fmtClock(s.startTime);
-      const tx = cx + subW / 2;
-      parts.push(`<rect x="${cx}" y="${yTop}" width="${subW - 4}" height="${cardH}" rx="11" fill="${t.soft}"/>`);
-      parts.push(`<rect x="${cx + 0.75}" y="${yTop + 0.75}" width="${subW - 5.5}" height="${cardH - 1.5}" rx="10.25" fill="none" stroke="${t.ink}" stroke-opacity="0.32" stroke-width="1"/>`);
-      parts.push(`<text x="${tx}" y="${yTop + Math.min(cardH * 0.5, 24)}" font-family="${ARABIC_FONT}" font-size="17" font-weight="800" fill="#2c2540" text-anchor="middle" direction="rtl">${esc(s.title)}</text>`);
-      if (cardH > 40 && n === 1) {
+      parts.push(`<rect x="${x + 3}" y="${cy}" width="${CW - 12}" height="${subH}" rx="11" fill="${t.soft}"/>`);
+      parts.push(`<rect x="${x + 3.75}" y="${cy + 0.75}" width="${CW - 13.5}" height="${subH - 1.5}" rx="10.25" fill="none" stroke="${t.ink}" stroke-opacity="0.32" stroke-width="1"/>`);
+      const titleY = cy + Math.min(subH * 0.5, 22) + 4;
+      parts.push(`<text x="${x + 12}" y="${titleY}" font-family="${ARABIC_FONT}" font-size="16" font-weight="800" fill="#2c2540" direction="rtl">${esc(s.title)}</text>`);
+      if (subH > 44 && n === 1) {
         parts.push(
-          `<text x="${cx + 10}" y="${yTop + Math.min(cardH * 0.5, 24) + 19}" font-family="${ARABIC_FONT}" font-size="13" fill="#2c2540" fill-opacity="0.82" direction="rtl">${esc(time)}${s.room ? " · " + esc(s.room) : ""}</text>`
+          `<text x="${x + 12}" y="${titleY + 18}" font-family="${ARABIC_FONT}" font-size="12" fill="#2c2540" fill-opacity="0.82" direction="rtl">${esc(time)}${s.room ? " · " + esc(s.room) : ""}</text>`
         );
       }
     };
@@ -243,12 +249,19 @@ export async function renderScheduleGridImage(sessions) {
     <text x="${w / 2}" y="64" font-family="${ARABIC_FONT}" font-size="16" fill="#8a8798" text-anchor="middle" direction="rtl">جدولك الفعلي لهذا الأسبوع</text>
     ${parts.join("")}
   </svg>`;
+  // Self-diagnosis: the renderer reports what it actually drew, so the bot
+  // can sanity-check its own output instead of shipping a broken table and
+  // waiting for the student to notice. Overlaps here mean two real classes
+  // share a slot — drawn stacked, never merged or dropped.
+  const diag = { slots: bySlot.size, stacked: 0, dropped: 0 };
+  for (const [, items] of bySlot) if (items.length > 1) diag.stacked++;
   const liveCount = all.length;
   const countWord =
     liveCount === 1 ? "حصة واحدة" : liveCount === 2 ? "حصتين" : `${liveCount} حصص`;
   return {
-    png: await toPng(svg),
+    png: await toPng(svg, 1600),
     caption: `🗓 جدولك الأسبوعي — ${countWord}`,
+    diag,
   };
 }
 
