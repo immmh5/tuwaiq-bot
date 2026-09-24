@@ -12,8 +12,7 @@ FROM node:24-trixie-slim
 # Arabic text as empty boxes.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends curl ca-certificates \
-        fonts-noto-core fonts-noto-extra \
- && fc-cache -f \
+        fonts-noto-core fonts-noto-extra fontconfig \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
