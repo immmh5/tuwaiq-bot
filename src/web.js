@@ -14,6 +14,7 @@ import {
   resetSeen,
 } from "./store.js";
 import { login, decodeToken, establishSession } from "./auth.js";
+import { fetch } from "./http.js";
 import { runCheckOnce, getWatcherState, startWatcher, stopWatcher } from "./watcher.js";
 import { sendMessage, isPolling, startWatchdog } from "./telegram.js";
 
@@ -224,6 +225,26 @@ export function createWebApp() {
         hops: s.hops,
         cookieKeys: s.cookie.split("; ").map((c) => c.split("=")[0]),
       });
+    } catch (err) {
+      res.json({ ok: false, error: String(err.message).slice(0, 200) });
+    }
+  });
+
+  // Raw schedule payload, so an overlap in the rendered table can be
+  // inspected against what the platform actually sends.
+  app.get("/api/schedule-raw", async (req, res) => {
+    if (process.env.CONTROL_SECRET && req.query.secret !== process.env.CONTROL_SECRET) {
+      return res.status(401).json({ error: "unauthorized" });
+    }
+    const tokens = await getTokens();
+    if (!tokens?.accessToken) return res.json({ ok: false, reason: "not logged in" });
+    try {
+      const r = await fetch(
+        "https://sc.tuwaiq.edu.sa/api/v1/subjectofferings/my-schedule?now=" +
+          encodeURIComponent(new Date().toISOString()),
+        { headers: { Authorization: `Bearer ${tokens.accessToken}`, "X-CSRF-Protection": "1" }, timeout: 30 }
+      );
+      res.json(JSON.parse(await r.text()));
     } catch (err) {
       res.json({ ok: false, error: String(err.message).slice(0, 200) });
     }
