@@ -34,18 +34,30 @@ const DEFAULTS = {
 };
 
 // Human-readable labels per value, shown on the buttons themselves.
+// Telegram clips long button labels, so these stay short; the panel body
+// carries the fuller wording.
 export const LABELS = {
-  schedule_orientation: {
-    days_top: "أيام أفقيًا (مثل المنصة)",
-    days_left: "أيام رأسيًا",
-  },
-  schedule_direction: { rtl: "اتجاه: يمين ← يسار", ltr: "اتجاه: يسار ← يمين" },
-  schedule_clean_names: { true: "تنظيف الأسماء: نعم", false: "تنظيف الأسماء: لا" },
+  schedule_orientation: { days_top: "أيام أفقيًا", days_left: "أيام رأسيًا" },
+  schedule_direction: { rtl: "يمين ← يسار", ltr: "يسار ← يمين" },
+  schedule_clean_names: { true: "تنظيف: نعم", false: "تنظيف: لا" },
   schedule_show_room: { true: "القاعة: ظاهرة", false: "القاعة: مخفية" },
-  notify_digest: { true: "تنبيهات: مجمّعة", false: "تنبيهات: فردية" },
-  remind_hours: { 24: "قبل ٢٤ ساعة", 12: "قبل ١٢ ساعة", 48: "قبل ٤٨ ساعة", 6: "قبل ٦ ساعات" },
-  check_interval: { 10: "فحص كل ١٠ دقائق", 5: "فحص كل ٥ دقائق", 30: "فحص كل ٣٠ دقيقة", 60: "فحص كل ساعة" },
-  ai_enabled: { true: "الذكاء: مفعّل", false: "الذكاء: متوقف" },
+  notify_digest: { true: "مجمّعة", false: "فردية" },
+  remind_hours: { 24: "٢٤ ساعة", 12: "١٢ ساعة", 48: "٤٨ ساعة", 6: "٦ ساعات" },
+  check_interval: { 10: "١٠ دقائق", 5: "٥ دقائق", 30: "٣٠ دقيقة", 60: "ساعة" },
+  ai_enabled: { true: "مفعّل", false: "متوقف" },
+};
+
+// The panel body names each setting, so the short button labels stay
+// understandable in context.
+export const SETTING_HINTS = {
+  schedule_orientation: "الاتجاه",
+  schedule_direction: "الكتابة",
+  schedule_clean_names: "تنظيف الأسماء",
+  schedule_show_room: "القاعة",
+  notify_digest: "التنبيهات",
+  remind_hours: "التذكير قبل",
+  check_interval: "فحص كل",
+  ai_enabled: "الذكاء",
 };
 
 const KEY = (chatId) => `settings:${chatId}`;

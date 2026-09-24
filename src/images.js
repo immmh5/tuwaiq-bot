@@ -138,13 +138,15 @@ export async function renderScheduleGridImage(sessions, opts = {}) {
   });
   // The platform appends a group suffix to most subject names — "احياء 2-1",
   // "اللغة الانجليزية 2-1" — which is noise in a one-student timetable. This
-  // trims any trailing token made of digits, dashes and dots, leaving the
-  // subject itself.
+  // trims any trailing group marker: a digit-and-dash token standing alone
+  // at the end of the name, in any of the forms the platform uses.
   const cleanTitle = (t) => {
     if (!cleanNames) return t;
     return String(t || "")
-      .replace(/\s*[-–]\s*\d+(\.\d+)?\s*$/, "") // trailing "-1" / "-2.1"
-      .replace(/\s+\d+[-–]\d+\s*$/, "") // trailing "2-1"
+      // "احياء 2-1", "اللغة الانجليزية 2-1" → whole trailing token
+      .replace(/\s+\d+(?:\.\d+)?\s*[-–]\s*\d+(?:\.\d+)?\s*$/, "")
+      // "احياء -1", "احياء 2" → lone suffix
+      .replace(/\s+[-–]?\d+(?:\.\d+)?\s*$/, "")
       .trim();
   };
   // The platform sends status capitalised ("Cancelled", "Pending"), so the

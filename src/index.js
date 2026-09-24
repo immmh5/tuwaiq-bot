@@ -20,6 +20,7 @@ import {
   cycleSetting,
   LABELS,
   SETTING_NAMES,
+  SETTING_HINTS,
   PANEL,
 } from "./settings.js";
 import { runCheckOnce, getWatcherState, startWatcher, notifyOwner, fetchScope } from "./watcher.js";
@@ -152,18 +153,6 @@ function registerCommands() {
     lines.push("<i>اضغط أي زر عشان تغيره — التغيير فوري.</i>");
     return lines.join("\n");
   }
-
-  // Short Arabic descriptions shown next to each value in the panel body.
-  const SETTING_HINTS = {
-    schedule_orientation: "الاتجاه",
-    schedule_direction: "الكتابة",
-    schedule_clean_names: "الأسماء",
-    schedule_show_room: "القاعة",
-    notify_digest: "النوع",
-    remind_hours: "التذكير",
-    check_interval: "الوتيرة",
-    ai_enabled: "الحالة",
-  };
 
   on("/settings", async ({ chatId }) => {
     const cfg = await getSettings(chatId);
@@ -315,7 +304,7 @@ function registerCommands() {
           `🕐 وقت الجلب: <code>${stamp}</code> (${ms}ms)`,
           `📡 الرد: <code>${items.length}</code> جلسة، <code>${live.length}</code> فعلي`,
           first
-            ? `🔍 أول حصة: <code>${escapeHtml(first.title)}</code> · ${escapeHtml(
+            ? `🔍 أول حصة: <code>${escapeHtml(first.title)}</code> · <code>${escapeHtml(
                 String(first.startTime || "")
               )}</code>`
             : "",
