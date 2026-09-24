@@ -518,11 +518,11 @@ function registerCommands() {
   on("/img_assignments", async (ctx) => onImg(ctx, "assignments"));
   on("/img_grades", async (ctx) => onImg(ctx, "grades"));
 
-  // The table as the site shows it: days as columns, times as rows, in the
-  // platform's own palette. The page itself sits behind a Keycloak session
-  // cookie that the bot's bearer token cannot satisfy, so the grid is built
-  // from the same API data the page consumes and dressed in the exact
-  // colours, rings and strikethrough the site's own CSS applies.
+  // The table exactly as the site shows it. The web page needs a Keycloak
+  // browser session (the bearer token is not enough), so this establishes
+  // one from the /login chain, then reads the real /student/schedule HTML
+  // and redraws it in the platform's own palette. If the session cannot be
+  // established it falls back to the API-driven grid rather than failing.
   on("/site", async ({ chatId, args }) => {
     if (!(await requireLogin(chatId))) return;
     const scope = String(args[0] || "schedule");
@@ -531,8 +531,33 @@ function registerCommands() {
       return;
     }
     const tokens = await getTokens();
-    await sendMessage(chatId, "📸 أبني جدولك بألوان المنصة…").catch(() => {});
+    await sendMessage(chatId, "📸 بسجّل دخول وأجيب الجدول…").catch(() => {});
+
     try {
+      const { establishSession } = await import("./auth.js");
+      const { getSchedulePageHTML } = await import("./tuwaiq.js");
+      const { parseScheduleHTML, renderSiteSchedule } = await import("./schedule-dom.js");
+
+      const sess = await establishSession(tokens.accessToken);
+      const html = sess.ok
+        ? await getSchedulePageHTML(tokens.accessToken, sess.cookie)
+        : null;
+
+      if (html && html.includes("tt-wrap")) {
+        const parsed = parseScheduleHTML(html);
+        if (parsed.classes.length) {
+          const { png } = await renderSiteSchedule(parsed);
+          await sendPhoto(
+            chatId,
+            png,
+            `📸 جدولك مثل ما يظهر في المنصة — ${parsed.classes.length} حصة` +
+              (parsed.nowText ? `\n<i>جارية الآن: ${esc(parsed.nowText)}</i>` : "")
+          );
+          return;
+        }
+      }
+      // No browser session or no grid on the page: fall back to the API grid,
+      // which is the same layout in the site's colours.
       const items = await fetchScope("schedule", tokens.accessToken);
       if (!Array.isArray(items) || !items.length) {
         await sendMessage(chatId, "ما في بيانات للجدول الحين.");
@@ -540,7 +565,7 @@ function registerCommands() {
       }
       const { renderScheduleGridImage } = await import("./images.js");
       const { png } = await renderScheduleGridImage(items);
-      await sendPhoto(chatId, png, `📸 جدولك مثل ما يظهر في المنصة — ${items.length} جلسة`);
+      await sendPhoto(chatId, png, `📸 جدولك — ${items.length} جلسة`);
     } catch (err) {
       await sendMessage(chatId, `⚠️ ما قدرت أصوّر: <code>${esc(err.message)}</code>`);
     }

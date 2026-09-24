@@ -146,6 +146,56 @@ async function exchangeCode(code, verifier) {
   return data;
 }
 
+// Establish a real browser session against the platform itself.
+//
+// The OAuth bearer token is honoured by the API but NOT by the web app —
+// /student/schedule redirects to login unless it sees Keycloak's
+// AUTH_SESSION_ID cookie. A cheap browser-style pass through the platform's
+// own /login route (which 302s into Keycloak and back) collects that cookie,
+// so any page can then be read exactly as the student sees it.
+export async function establishSession(accessToken) {
+  const jar = [];
+  const remember = (res) => {
+    const set = res.get("set-cookie");
+    if (set) jar.push(set.split(/\s*;\s*/)[0]);
+  };
+
+  // 1. GET /login with the bearer token; the app redirects into Keycloak to
+  //    start a code flow, exactly as a browser visit would.
+  let res = await fetch("https://sc.tuwaiq.edu.sa/login", {
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      Accept: "text/html,application/xhtml+xml",
+    },
+    redirect: "manual",
+    timeout: 30,
+  });
+  remember(res);
+
+  // 2. Walk the redirect chain manually, collecting every Set-Cookie.
+  //    The one that matters is AUTH_SESSION_ID, issued by Keycloak.
+  let loc = res.get("location");
+  let hops = 0;
+  while (loc && hops < 8) {
+    res = await fetch(loc, {
+      headers: {
+        Accept: "text/html,application/xhtml+xml",
+        ...(jar.length ? { Cookie: jar.join("; ") } : {}),
+      },
+      redirect: "manual",
+      timeout: 30,
+    });
+    remember(res);
+    const next = res.get("location");
+    if (!next) break;
+    loc = next;
+    hops++;
+  }
+
+  const cookieStr = jar.join("; ");
+  return { cookie: cookieStr, ok: /AUTH_SESSION_ID/.test(cookieStr), hops };
+}
+
 // Indirection so tests can swap the implementation (ES module namespace
 // bindings are read-only). Production code calls authImpl.* through the
 // exported wrappers below.

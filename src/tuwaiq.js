@@ -158,22 +158,20 @@ async function _getMySchedule(accessToken, weekStart) {
   });
 }
 
-// Fetch the rendered /student/schedule page HTML. The timetable is
-// server-rendered into #root, so one authenticated GET carries the full
-// .tt grid — exactly what the student sees, including substitutions and the
-// live-class strip. Used to screenshot the site's own table.
-export async function getSchedulePageHTML(accessToken) {
+// Fetch the rendered /student/schedule page with a real browser session.
+// The OAuth bearer token is rejected by the web app; this needs Keycloak's
+// AUTH_SESSION_ID, obtained by establishSession() walking the /login chain.
+export async function getSchedulePageHTML(accessToken, cookie) {
   const res = await fetch("https://sc.tuwaiq.edu.sa/student/schedule", {
     method: "GET",
     headers: {
-      ...authHeaders(accessToken),
       Accept: "text/html,application/xhtml+xml",
       Referer: "https://sc.tuwaiq.edu.sa/dashboard",
+      ...(cookie ? { Cookie: cookie } : authHeaders(accessToken)),
     },
     timeout: 40,
   });
-  // res.text is a function that returns the body string, not the string
-  // itself — calling it is what /site schedule was missing.
+  // res.text is a function returning the body string, not the string itself.
   return await res.text();
 }
 

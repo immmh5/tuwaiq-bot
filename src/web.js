@@ -13,7 +13,7 @@ import {
   listSeen,
   resetSeen,
 } from "./store.js";
-import { login, decodeToken } from "./auth.js";
+import { login, decodeToken, establishSession } from "./auth.js";
 import { runCheckOnce, getWatcherState, startWatcher, stopWatcher } from "./watcher.js";
 import { sendMessage, isPolling, startWatchdog } from "./telegram.js";
 
@@ -205,6 +205,28 @@ export function createWebApp() {
   app.get("/api/whoami", async (_req, res) => {
     const chatId = await getKv("last_chat_id", null);
     res.json({ chatId, configured: process.env.TELEGRAM_CHAT_ID || null });
+  });
+
+  // Diagnostic: does a browser session against the platform actually hold?
+  // Web pages need Keycloak's AUTH_SESSION_ID, which the OAuth token alone
+  // does not provide. This walks the /login chain and reports what it found,
+  // without echoing secrets.
+  app.get("/api/session", async (req, res) => {
+    if (process.env.CONTROL_SECRET && req.query.secret !== process.env.CONTROL_SECRET) {
+      return res.status(401).json({ error: "unauthorized" });
+    }
+    const tokens = await getTokens();
+    if (!tokens?.accessToken) return res.json({ ok: false, reason: "not logged in" });
+    try {
+      const s = await establishSession(tokens.accessToken);
+      res.json({
+        ok: s.ok,
+        hops: s.hops,
+        cookieKeys: s.cookie.split("; ").map((c) => c.split("=")[0]),
+      });
+    } catch (err) {
+      res.json({ ok: false, error: String(err.message).slice(0, 200) });
+    }
   });
 
   app.get("/api/state", async (_req, res) => {
