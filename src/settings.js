@@ -20,6 +20,10 @@ const DEFAULTS = {
   notify_digest: false,
   // Deadline reminder lead time, in hours.
   remind_hours: 24,
+  // Watcher cadence, in minutes.
+  check_interval: 10,
+  // Whether the AI answers free text.
+  ai_enabled: true,
 };
 
 // Human-readable labels per value, shown on the buttons themselves.
@@ -30,6 +34,9 @@ export const LABELS = {
   },
   schedule_show_room: { true: "القاعة: ظاهرة", false: "القاعة: مخفية" },
   notify_digest: { true: "تنبيهات: مجمّعة", false: "تنبيهات: فردية" },
+  remind_hours: { 24: "قبل ٢٤ ساعة", 12: "قبل ١٢ ساعة", 48: "قبل ٤٨ ساعة", 6: "قبل ٦ ساعات" },
+  check_interval: { 10: "فحص كل ١٠ دقائق", 5: "فحص كل ٥ دقائق", 30: "فحص كل ٣٠ دقيقة", 60: "فحص كل ساعة" },
+  ai_enabled: { true: "الذكاء: مفعّل", false: "الذكاء: متوقف" },
 };
 
 const KEY = (chatId) => `settings:${chatId}`;
@@ -58,13 +65,37 @@ export async function setSetting(chatId, name, value) {
 }
 
 // Cycle a setting through its allowed values — used by toggle buttons.
+// Numbers come back as numbers so remind_hours stays usable downstream.
 export async function cycleSetting(chatId, name) {
   const all = await getSettings(chatId);
   const allowed = Object.keys(LABELS[name] || {});
   if (!allowed.length) return all;
-  const idx = allowed.indexOf(String(all[name]));
+  const cur = String(all[name]);
+  const idx = allowed.indexOf(cur);
   const next = allowed[(idx + 1) % allowed.length];
-  return setSetting(chatId, name, next === "true" ? true : next === "false" ? false : next);
+  const numeric = Number(next);
+  return setSetting(chatId, name, Number.isFinite(numeric) && next !== "" ? numeric : next);
 }
 
 export const SETTING_NAMES = Object.keys(DEFAULTS);
+
+// Panel sections: each groups related settings so the buttons read as one
+// subject per block rather than a flat list.
+export const PANEL = [
+  {
+    title: "🗓 الجدول",
+    items: ["schedule_orientation", "schedule_show_room"],
+  },
+  {
+    title: "🔔 التنبيهات",
+    items: ["notify_digest", "remind_hours"],
+  },
+  {
+    title: "🔄 المراقبة",
+    items: ["check_interval"],
+  },
+  {
+    title: "🤖 الذكاء",
+    items: ["ai_enabled"],
+  },
+];

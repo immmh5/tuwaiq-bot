@@ -356,10 +356,21 @@ export async function notifyOwner(text) {
 // --- scheduler ----------------------------------------------------------------
 
 let timer = null;
+// The cadence can be changed at runtime from the settings panel, so the
+// effective interval is resolved here rather than read once at boot.
+export async function getCheckIntervalMinutes() {
+  // Per-chat setting wins when set; the env var is the fallback.
+  const { getKv } = await import("./store.js");
+  try {
+    const cfg = await getKv(`settings:${process.env.TELEGRAM_CHAT_ID || "owner"}`, {});
+    if (cfg && cfg.check_interval) return Math.max(5, Math.min(120, Number(cfg.check_interval) || 10));
+  } catch {}
+  return Math.max(5, Math.min(120, Number(process.env.CHECK_INTERVAL_MIN) || 10));
+}
 
-export function startWatcher() {
+export async function startWatcher() {
   if (timer) return;
-  const intervalMin = Math.max(5, Math.min(120, Number(process.env.CHECK_INTERVAL_MIN) || 10));
+  const intervalMin = await getCheckIntervalMinutes();
   const run = async () => {
     try {
       await runCheckOnce();
@@ -371,6 +382,13 @@ export function startWatcher() {
   setTimeout(run, 5000);
   timer = setInterval(run, intervalMin * 60 * 1000);
   console.log(`watcher started (every ${intervalMin} min)`);
+}
+
+// Restart the scheduler so a settings change to the interval takes effect
+// without waiting for the next redeploy.
+export async function restartWatcher() {
+  stopWatcher();
+  await startWatcher();
 }
 
 export function stopWatcher() {

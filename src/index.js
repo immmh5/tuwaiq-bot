@@ -20,6 +20,7 @@ import {
   cycleSetting,
   LABELS,
   SETTING_NAMES,
+  PANEL,
 } from "./settings.js";
 import { runCheckOnce, getWatcherState, startWatcher, notifyOwner, fetchScope } from "./watcher.js";
 import { getMyAssignments, getStudentHome, getUnreadCount, getMyAttendance, normalizeAssignments } from "./tuwaiq.js";
@@ -55,10 +56,12 @@ async function requireLogin(chatId) {
 // question is fast and a detailed one is thorough.
 async function answerWithAI(chatId, question) {
   if (!(await requireLogin(chatId))) return;
-  if (!isAIEnabled()) {
+  // The panel toggle is per-chat and takes effect immediately.
+  const cfg = await getSettings(chatId).catch(() => ({}));
+  if (cfg.ai_enabled === false || !isAIEnabled()) {
     await sendMessage(
       chatId,
-      "🤖 الذكاء الاصطناعي ما هو مفعّل الحين.\n\nتقدر تستخدم الأوامر (جرّب /help)."
+      "🤖 الذكاء الاصطناعي متوقف الحين.\n\nتقدر تشغّله من <code>/settings</code>، أو تستخدم الأوامر (جرّب /help)."
     );
     return;
   }
@@ -129,35 +132,36 @@ function registerCommands() {
   // its values from the per-chat settings store, and every button re-renders
   // the same message in place, so the menu never scrolls the chat away.
   function settingsRows(cfg) {
-    const rowFor = (name) => [
-      {
-        label: LABELS[name][String(cfg[name])] || String(cfg[name]),
-        action: `set:${name}`,
-      },
-    ];
-    return [
-      rowFor("schedule_orientation"),
-      rowFor("schedule_show_room"),
-      rowFor("notify_digest"),
-      [{ label: "⛔ إغلاق", action: "close" }],
-    ];
+    // One row per section so the buttons stay under their heading and no
+    // row is wider than the phone screen.
+    return PANEL.map((sec) => sec.items.map((name) => ({
+      label: LABELS[name][String(cfg[name])] || String(cfg[name]),
+      action: `set:${name}`,
+    }))).concat([[{ label: "⛔ إغلاق", action: "close" }]]);
   }
 
   function settingsText(cfg) {
-    return [
-      "<b>⚙️ الإعدادات</b>",
-      "",
-      "🗓 <b>الجدول</b>",
-      `الاتجاه: ${LABELS.schedule_orientation[String(cfg.schedule_orientation)]}`,
-      `القاعة: ${cfg.schedule_show_room ? "ظاهرة" : "مخفية"}`,
-      "",
-      "🔔 <b>التنبيهات</b>",
-      `النوع: ${cfg.notify_digest ? "مجمّعة في رسالة" : "كل عنصر لحاله"}`,
-      `التذكير قبل: ${cfg.remind_hours} ساعة`,
-      "",
-      "<i>اضغط أي زر عشان تغيره — التغيير فوري.</i>",
-    ].join("\n");
+    const lines = ["<b>⚙️ الإعدادات</b>", ""];
+    for (const sec of PANEL) {
+      lines.push(`<b>${sec.title}</b>`);
+      for (const name of sec.items) {
+        lines.push(`${SETTING_HINTS[name] || name}: ${LABELS[name][String(cfg[name])] || cfg[name]}`);
+      }
+      lines.push("");
+    }
+    lines.push("<i>اضغط أي زر عشان تغيره — التغيير فوري.</i>");
+    return lines.join("\n");
   }
+
+  // Short Arabic descriptions shown next to each value in the panel body.
+  const SETTING_HINTS = {
+    schedule_orientation: "الاتجاه",
+    schedule_show_room: "القاعة",
+    notify_digest: "النوع",
+    remind_hours: "التذكير",
+    check_interval: "الوتيرة",
+    ai_enabled: "الحالة",
+  };
 
   on("/settings", async ({ chatId }) => {
     const cfg = await getSettings(chatId);
@@ -165,13 +169,22 @@ function registerCommands() {
   });
 
   // A button press. The action carries the setting name; the handler cycles
-  // to the next allowed value and rewrites the panel.
+  // to the next allowed value and rewrites the panel. Some settings also
+  // have an immediate runtime effect, so those are applied right here.
   onCallback("set", async ({ chatId, messageId, arg, queryId }) => {
     if (!SETTING_NAMES.includes(arg)) {
       await answerCallbackQuery(queryId, "❓ إعداد غير معروف");
       return;
     }
     const cfg = await cycleSetting(chatId, arg);
+    // The watcher cadence only takes effect on a restart, so restart it
+    // whenever that setting moves.
+    if (arg === "check_interval") {
+      try {
+        const { restartWatcher } = await import("./watcher.js");
+        await restartWatcher();
+      } catch {}
+    }
     await editMessage(messageId, chatId, settingsText(cfg), settingsRows(cfg));
     await answerCallbackQuery(queryId, `✅ ${LABELS[arg][String(cfg[arg])]}`);
   });

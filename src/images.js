@@ -118,26 +118,36 @@ export async function renderScheduleGridImage(sessions, opts = {}) {
     const [h, m] = String(t || "0:0").split(":").map(Number);
     return (h || 0) * 60 + (m || 0);
   };
+  const fmtSlot = (m) => {
+    const h = Math.floor(m / 60);
+    const mm = String(m % 60).padStart(2, "0");
+    const ap = h >= 12 ? "م" : "ص";
+    const hh = h % 12 === 0 ? 12 : h % 12;
+    return `${hh}:${mm} ${ap}`;
+  };
   const norm = (s) => ({
     ...s,
     day: String(s.date || "").slice(0, 10),
     startMin: toMin(s.startTime),
     endMin: toMin(s.endTime) || toMin(s.startTime) + 45,
-    cancelled: s.status === "cancelled",
   });
   // The platform sends status capitalised ("Cancelled", "Pending"), so the
   // comparison is case-insensitive — a case-sensitive filter was letting
   // cancelled classes through and the student saw them in the table.
-  const isCancelled = (s) => String(s.status || (s.isCancelled ? "cancelled" : "")).toLowerCase() === "cancelled";
+  const isCancelled = (s) =>
+    String(s.status || (s.isCancelled ? "cancelled" : "")).toLowerCase() === "cancelled";
   const all = (sessions || []).filter((s) => !isCancelled(s)).map(norm);
   const days = [...new Set(all.map((s) => s.day))].sort();
   if (!days.length) days.push(today);
 
-  // Open and close of the whole grid, in minutes — the site lays cards out
-  // on this same axis, positioning each by its real start/end times.
-  const lo = Math.min(...all.map((s) => s.startMin), 7 * 60);
-  const hi = Math.max(...all.map((s) => s.endMin), 13 * 60);
-  const SPAN = hi - lo;
+  // Slots are the real rows/columns of the table. The platform's week has a
+  // fixed set of start times (7:00, 7:45, 8:30, 9:45 …) and every class
+  // lands on one of them, so the grid is built from the distinct start
+  // times actually present. The axis is then a label on each cell and can
+  // never drift against the cards — which is what made the earlier
+  // free-minute hour grid disagree with the classes beneath it.
+  const slots = [...new Set(all.map((s) => s.startMin))].sort((a, b) => a - b);
+  if (!slots.length) slots.push(7 * 60);
 
   // The platform's own subject palette, verbatim from its shipped CSS
   // (data-tint 0..5 → --eqc-ink / --eqc-soft). Using the page's real colours
@@ -150,152 +160,142 @@ export async function renderScheduleGridImage(sessions, opts = {}) {
     { ink: "#cf9a2c", soft: "#fbf2da" },
     { ink: "#a05fb5", soft: "#f6ebf9" },
   ];
-  // Assign one tint per subject, in first-seen order, mirroring how the
-  // page assigns data-tint per offering.
   const subjTint = new Map();
   for (const s of all) if (s.subject && !subjTint.has(s.subject)) subjTint.set(s.subject, subjTint.size);
   const colorFor = (s) => TINTS[(subjTint.get(s.subject) ?? 0) % TINTS.length];
 
-  const PAD = 28;
-  const LABEL = 84; // gutter for the time axis
-
-  // Two orientations share one renderer:
-  //   days_top  — days across the top, times down the left (the site's own
-  //               layout, and the default)
-  //   days_left — days down the left side, times across the top
+  // Geometry. In days_top the X axis is days and the Y axis is slots;
+  // days_left swaps them. Both share one cell math, so a card always sits
+  // inside its cell and the header above it lines up exactly.
   const daysTop = orientation === "days_top";
-  const W = 1000;
-  const w = W;
-  const CW = Math.floor((W - PAD * 2 - LABEL) / days.length);
-
-  // Vertical axis: one minute of class time maps to a fixed number of
-  // pixels, exactly like the site's 45-min = 67.5px grid.
-  // Three stacked bands, each with its own clear space:
-  //   title block → day headers → grid.
-  // Earlier the today-highlight rect started at y=36 and ran into the title,
-  // which is what showed up as an empty box floating above the table.
-  const TITLE_H = 76;
-  const HEAD_H = daysTop ? 56 : 40;
-  const TOP = TITLE_H + HEAD_H + 6;
-  const PPM = 1.5; // px per minute (45 min → 67.5px, the site's own scale)
-  // days_left gives each day its own horizontal band; the band height is
-  // fixed so all five rows fit comfortably.
-  const rowH = 104;
-  const h = daysTop
-    ? TOP + SPAN * PPM + 70
-    : TOP + days.length * rowH + PAD;
+  const PAD = 26;
+  const GUTTER = 76;
+  const TITLE_H = 82;
+  const HEAD_H = 52;
+  const W = 1180;
+  const nX = daysTop ? days.length : slots.length;
+  const nY = daysTop ? slots.length : days.length;
+  const gridW = W - PAD * 2 - GUTTER;
+  const cellW = gridW / nX;
+  // Every cell gets the same height, so a day with many classes never
+  // squeezes its cards shorter than their text.
+  const ROW_H = 92;
+  const gridH = ROW_H * nY;
+  const h = TITLE_H + HEAD_H + gridH + PAD;
 
   const parts = [];
-  const firstH = Math.floor(lo / 60);
-  const lastH = Math.ceil(hi / 60);
-  const hourW = Math.floor((w - PAD * 2 - LABEL) / Math.max(lastH - firstH, 1));
 
+  // Axis labels, each centred on the cell it belongs to.
   if (daysTop) {
-    // Hour rules down the left gutter, like the page's own axis
-    for (let hh = firstH; hh <= lastH; hh++) {
-      const y = TOP + (hh * 60 - lo) * PPM;
-      parts.push(`<line x1="${PAD}" y1="${y}" x2="${w - PAD}" y2="${y}" stroke="rgba(124,92,191,.14)" stroke-width="1"/>`);
-      parts.push(
-        `<text x="${PAD + LABEL - 14}" y="${y + 5}" font-family="${ARABIC_FONT}" font-size="16" fill="#8a8798" text-anchor="end" direction="rtl">${hh}:00</text>`
-      );
+    for (let i = 0; i < days.length; i++) {
+      const isToday = days[i] === today;
+      const cx = PAD + GUTTER + i * cellW + cellW / 2;
+      if (isToday) parts.push(`<rect x="${cx - cellW / 2 + 2}" y="${TITLE_H}" width="${cellW - 6}" height="${HEAD_H - 8}" rx="10" fill="#7c5cbf1f"/>`);
+      parts.push(`<text x="${cx}" y="${TITLE_H + 30}" font-family="${ARABIC_FONT}" font-size="19" font-weight="800" fill="${isToday ? "#7c5cbf" : "#2c2540"}" text-anchor="middle" direction="rtl">${esc(fmtDayName(days[i]).split(" ")[0])}</text>`);
+    }
+    for (let j = 0; j < slots.length; j++) {
+      parts.push(`<text x="${PAD + GUTTER - 12}" y="${TITLE_H + HEAD_H + j * ROW_H + ROW_H / 2 + 5}" font-family="${ARABIC_FONT}" font-size="15" fill="#8a8798" text-anchor="end" direction="rtl">${fmtSlot(slots[j])}</text>`);
     }
   } else {
-    // Days_left: hours across the top, days down the left
-    for (let hh = firstH; hh <= lastH; hh++) {
-      const x = PAD + LABEL + (hh - firstH) * hourW;
-      parts.push(`<line x1="${x}" y1="${TOP}" x2="${x}" y2="${h - PAD}" stroke="rgba(124,92,191,.14)" stroke-width="1"/>`);
-      parts.push(
-        `<text x="${x + hourW / 2}" y="${TITLE_H + HEAD_H - 12}" font-family="${ARABIC_FONT}" font-size="16" fill="#8a8798" text-anchor="middle" direction="rtl">${hh}:00</text>`
-      );
+    for (let j = 0; j < slots.length; j++) {
+      const cx = PAD + GUTTER + j * cellW + cellW / 2;
+      parts.push(`<text x="${cx}" y="${TITLE_H + 30}" font-family="${ARABIC_FONT}" font-size="15" fill="#8a8798" text-anchor="middle" direction="rtl">${fmtSlot(slots[j])}</text>`);
+    }
+    for (let i = 0; i < days.length; i++) {
+      const isToday = days[i] === today;
+      const ry = TITLE_H + HEAD_H + i * ROW_H;
+      if (isToday) parts.push(`<rect x="${PAD}" y="${ry}" width="${W - PAD * 2}" height="${ROW_H - 4}" fill="#7c5cbf1f"/>`);
+      parts.push(`<text x="${PAD + GUTTER - 12}" y="${ry + ROW_H / 2 + 6}" font-family="${ARABIC_FONT}" font-size="18" font-weight="800" fill="${isToday ? "#7c5cbf" : "#2c2540"}" text-anchor="end" direction="rtl">${esc(fmtDayName(days[i]).split(" ")[0])}</text>`);
     }
   }
 
-  // Day headers, today highlighted like the site's .is-today gradient
-  for (let i = 0; i < days.length; i++) {
-    const x = PAD + LABEL + i * CW;
-    const isToday = days[i] === today;
-    if (daysTop) {
-      if (isToday) parts.push(`<rect x="${x}" y="${TITLE_H}" width="${CW - 6}" height="${HEAD_H - 4}" rx="10" fill="#7c5cbf1f"/>`);
-      parts.push(`<line x1="${x}" y1="${TITLE_H + HEAD_H - 4}" x2="${x + CW - 6}" y2="${TITLE_H + HEAD_H - 4}" stroke="rgba(124,92,191,.14)" stroke-width="1"/>`);
-      parts.push(
-        `<text x="${x + CW / 2 - 3}" y="${TITLE_H + 26}" font-family="${ARABIC_FONT}" font-size="20" font-weight="800" fill="${isToday ? "#7c5cbf" : "#2c2540"}" text-anchor="middle" direction="rtl">${esc(fmtDayName(days[i]).split(" ")[0])}</text>`
-      );
-    } else {
-      // days_left: day name sits in the left gutter beside its row
-      const rowY = TOP + i * rowH;
-      if (isToday) parts.push(`<rect x="${PAD}" y="${rowY}" width="${w - PAD * 2}" height="${rowH - 4}" fill="#7c5cbf1f"/>`);
-      parts.push(
-        `<text x="${PAD + LABEL - 14}" y="${rowY + rowH / 2 + 7}" font-family="${ARABIC_FONT}" font-size="18" font-weight="800" fill="${isToday ? "#7c5cbf" : "#2c2540"}" text-anchor="end" direction="rtl">${esc(fmtDayName(days[i]).split(" ")[0])}</text>`
-      );
-    }
+  // Faint cell separators, behind the cards
+  for (let i = 0; i <= nX; i++) {
+    const lx = PAD + GUTTER + i * cellW;
+    parts.push(`<line x1="${lx}" y1="${TITLE_H + HEAD_H}" x2="${lx}" y2="${TITLE_H + HEAD_H + gridH}" stroke="rgba(124,92,191,.10)" stroke-width="1"/>`);
+  }
+  for (let j = 0; j <= nY; j++) {
+    const ly = TITLE_H + HEAD_H + j * ROW_H;
+    parts.push(`<line x1="${PAD + GUTTER}" y1="${ly}" x2="${W - PAD}" y2="${ly}" stroke="rgba(124,92,191,.10)" stroke-width="1"/>`);
   }
 
-  // Group per day+slot. Overlapping sessions in one slot — the cancelled
-  // original beside its replacement, or a genuine double period — share the
-  // column side by side instead of being squeezed into stacked thin rows,
-  // which is what the site itself does.
-  const slotKey = (s) => `${s.day}|${s.startMin}`;
-  const bySlot = new Map();
+  // A cell holds its classes. Two real classes in one slot (the student
+  // takes both هندسة and تطوير البرمجيات at 09:45 Sunday) stack inside
+  // the cell, each keeping full cell width.
+  const cellOf = (s) => {
+    const di = days.indexOf(s.day);
+    const si = slots.indexOf(s.startMin);
+    return daysTop ? { x: di, y: si } : { x: si, y: di };
+  };
+  const byCell = new Map();
   for (const s of all) {
-    if (!bySlot.has(slotKey(s))) bySlot.set(slotKey(s), []);
-    bySlot.get(slotKey(s)).push(s);
+    const c = cellOf(s);
+    const k = `${c.x}|${c.y}`;
+    if (!byCell.has(k)) byCell.set(k, []);
+    byCell.get(k).push(s);
   }
 
-  for (const [, items] of bySlot) {
-    const s0 = items[0];
-    const col = days.indexOf(s0.day);
-    // days_top: x is the day column, y is the time. days_left swaps them.
-    const x = daysTop ? PAD + LABEL + col * CW : PAD + LABEL + (s0.startMin - lo) / SPAN * (w - PAD * 2 - LABEL);
-    const yTop = daysTop ? TOP + (s0.startMin - lo) * PPM + 2 : TOP + col * rowH + 6;
-    const cardH = daysTop
-      ? Math.max((s0.endMin - s0.startMin) * PPM - 4, 44)
-      : rowH - 14;
-    const cardW = daysTop
-      ? CW - 12
-      : Math.max(((s0.endMin - s0.startMin) / SPAN) * (w - PAD * 2 - LABEL) - 8, 70);
+  // Fit Arabic text inside a card. SVG has no automatic wrapping, so the
+  // text is measured and split at word boundaries, then truncated with an
+  // ellipsis if it still does not fit — this is what stopped names like
+  // "تطوير البرمجيات" running past the card's edge.
+  const charW = (fontSize) => fontSize * 0.52;
+  const wrapText = (text, maxW, fontSize) => {
+    const words = String(text).split(/\s+/).filter(Boolean);
+    const lines = [];
+    let cur = "";
+    for (const word of words) {
+      const trial = cur ? cur + " " + word : word;
+      if (trial.length * charW(fontSize) <= maxW || !cur) cur = trial;
+      else { lines.push(cur); cur = word; }
+    }
+    if (cur) lines.push(cur);
+    if (lines.length > 2) {
+      lines[1] = lines[1].slice(0, Math.max(1, lines[1].length - 1)) + "…";
+      lines.length = 2;
+    }
+    return lines;
+  };
+
+  for (const [, items] of byCell) {
+    const c = cellOf(items[0]);
+    const cx = PAD + GUTTER + c.x * cellW;
+    const cy0 = TITLE_H + HEAD_H + c.y * ROW_H;
     const n = items.length;
+    const subH = n > 1 ? (ROW_H - 8 - (n - 1) * 6) / n : ROW_H - 8;
 
-    // Two real classes can genuinely share a slot — a student taking both
-    // هندسة البرمجيات and تطوير البرمجيات meets at 09:45 on Sunday. The
-    // site draws them side by side in one wide card; with narrow columns
-    // the names clip, so the card splits into stacked sub-cards and each
-    // keeps the full column width.
-    const subH = n > 1 ? Math.max((cardH - (n - 1) * 4) / n, 30) : cardH;
-
-    // Site-faithful card: soft fill, ink-coloured inset ring — the same
-    // recipe the platform's own CSS uses for .tt-class.
     const draw = (s, idx) => {
-      const cy = yTop + idx * (subH + 4);
+      const cy = cy0 + 4 + idx * (subH + 6);
       const t = colorFor(s);
-      const time = fmtClock(s.startTime);
-      parts.push(`<rect x="${x + 3}" y="${cy}" width="${cardW}" height="${subH}" rx="11" fill="${t.soft}"/>`);
-      parts.push(`<rect x="${x + 3.75}" y="${cy + 0.75}" width="${cardW - 1.5}" height="${subH - 1.5}" rx="10.25" fill="none" stroke="${t.ink}" stroke-opacity="0.32" stroke-width="1"/>`);
-      const titleY = cy + Math.min(subH * 0.5, 22) + 4;
-      parts.push(`<text x="${x + 12}" y="${titleY}" font-family="${ARABIC_FONT}" font-size="16" font-weight="800" fill="#2c2540" direction="rtl">${esc(s.title)}</text>`);
-      if (subH > 44 && n === 1) {
-        parts.push(
-          `<text x="${x + 12}" y="${titleY + 18}" font-family="${ARABIC_FONT}" font-size="12" fill="#2c2540" fill-opacity="0.82" direction="rtl">${esc(time)}${showRoom && s.room ? " · " + esc(s.room) : ""}</text>`
-        );
+      const innerW = cellW - 14;
+      parts.push(`<rect x="${cx + 3}" y="${cy}" width="${innerW}" height="${subH}" rx="10" fill="${t.soft}"/>`);
+      parts.push(`<rect x="${cx + 3.75}" y="${cy + 0.75}" width="${innerW - 1.5}" height="${subH - 1.5}" rx="9.25" fill="none" stroke="${t.ink}" stroke-opacity="0.32" stroke-width="1"/>`);
+
+      const lines = wrapText(s.title, innerW - 14, 15);
+      const lineH = 19;
+      const textTop = cy + (subH - lines.length * lineH) / 2 + 14;
+      lines.forEach((ln, li) => {
+        parts.push(`<text x="${cx + 10}" y="${textTop + li * lineH}" font-family="${ARABIC_FONT}" font-size="15" font-weight="800" fill="#2c2540" direction="rtl">${esc(ln)}</text>`);
+      });
+      if (showRoom && s.room && subH > 54 && n === 1) {
+        parts.push(`<text x="${cx + 10}" y="${cy + subH - 10}" font-family="${ARABIC_FONT}" font-size="12" fill="#2c2540" fill-opacity="0.72" direction="rtl">${esc(s.room)}</text>`);
       }
     };
 
-    // Cancelled classes are filtered out before rendering, so every card
-    // here is a real class this week.
     items.forEach((s, i) => draw(s, i));
   }
 
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" direction="rtl">
-    <rect width="${w}" height="${h}" fill="#ffffff"/>
-    <text x="${w / 2}" y="36" font-family="${ARABIC_FONT}" font-size="26" font-weight="700" fill="#2c2540" text-anchor="middle" direction="rtl">🗓 جدولي الأسبوعي</text>
-    <text x="${w / 2}" y="64" font-family="${ARABIC_FONT}" font-size="16" fill="#8a8798" text-anchor="middle" direction="rtl">جدولك الفعلي لهذا الأسبوع</text>
-    ${parts.join("")}
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${h}" direction="rtl">
+    <rect width="${W}" height="${h}" fill="#ffffff"/>
+    <text x="${W / 2}" y="38" font-family="${ARABIC_FONT}" font-size="26" font-weight="700" fill="#2c2540" text-anchor="middle" direction="rtl">🗓 جدولي الأسبوعي</text>
+    <text x="${W / 2}" y="66" font-family="${ARABIC_FONT}" font-size="15" fill="#8a8798" text-anchor="middle" direction="rtl">جدولك الفعلي لهذا الأسبوع</text>
+    ${parts.join("\n")}
   </svg>`;
   // Self-diagnosis: the renderer reports what it actually drew, so the bot
   // can sanity-check its own output instead of shipping a broken table and
-  // waiting for the student to notice. Overlaps here mean two real classes
-  // share a slot — drawn stacked, never merged or dropped.
-  const diag = { slots: bySlot.size, stacked: 0, dropped: 0 };
-  for (const [, items] of bySlot) if (items.length > 1) diag.stacked++;
+  // waiting for the student to notice.
+  const diag = { cells: byCell.size, stacked: 0, slots: slots.length, days: days.length };
+  for (const [, items] of byCell) if (items.length > 1) diag.stacked++;
   const liveCount = all.length;
   const countWord =
     liveCount === 1 ? "حصة واحدة" : liveCount === 2 ? "حصتين" : `${liveCount} حصص`;
