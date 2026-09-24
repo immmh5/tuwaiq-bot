@@ -518,10 +518,11 @@ function registerCommands() {
   on("/img_assignments", async (ctx) => onImg(ctx, "assignments"));
   on("/img_grades", async (ctx) => onImg(ctx, "grades"));
 
-  // Screenshot the site's own schedule page: fetch the rendered HTML and
-  // redraw the exact .tt grid in the platform's own colours. This is the
-  // "give me the table as it looks on the website" command — substitutions,
-  // the cancelled strikethrough, and the live-class banner all come through.
+  // The table as the site shows it: days as columns, times as rows, in the
+  // platform's own palette. The page itself sits behind a Keycloak session
+  // cookie that the bot's bearer token cannot satisfy, so the grid is built
+  // from the same API data the page consumes and dressed in the exact
+  // colours, rings and strikethrough the site's own CSS applies.
   on("/site", async ({ chatId, args }) => {
     if (!(await requireLogin(chatId))) return;
     const scope = String(args[0] || "schedule");
@@ -530,24 +531,18 @@ function registerCommands() {
       return;
     }
     const tokens = await getTokens();
-    await sendMessage(chatId, "📸 بجيب جدولك من المنصة…").catch(() => {});
+    await sendMessage(chatId, "📸 أبني جدولك بألوان المنصة…").catch(() => {});
     try {
-      const { getSchedulePageHTML } = await import("./tuwaiq.js");
-      const { parseScheduleHTML, renderSiteSchedule } = await import("./schedule-dom.js");
-      const html = await getSchedulePageHTML(tokens.accessToken);
-      const parsed = parseScheduleHTML(html);
-      if (!parsed.classes.length) {
-        await sendMessage(chatId, "ما لقيت جدول في الصفحة الحين.");
+      const items = await fetchScope("schedule", tokens.accessToken);
+      if (!Array.isArray(items) || !items.length) {
+        await sendMessage(chatId, "ما في بيانات للجدول الحين.");
         return;
       }
-      const { png } = await renderSiteSchedule(parsed);
-      await sendPhoto(
-        chatId,
-        png,
-        `📸 جدولك مثل ما يظهر في المنصة — ${parsed.classes.length} حصة\n<i>${esc(parsed.nowText ? "جارية الآن: " + parsed.nowText : "ما في حصة شغّالة الحين")}</i>`
-      );
+      const { renderScheduleGridImage } = await import("./images.js");
+      const { png } = await renderScheduleGridImage(items);
+      await sendPhoto(chatId, png, `📸 جدولك مثل ما يظهر في المنصة — ${items.length} جلسة`);
     } catch (err) {
-      await sendMessage(chatId, `⚠️ ما قدرت أصوّر الصفحة: <code>${esc(err.message)}</code>`);
+      await sendMessage(chatId, `⚠️ ما قدرت أصوّر: <code>${esc(err.message)}</code>`);
     }
   });
 

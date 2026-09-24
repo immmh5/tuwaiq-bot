@@ -123,10 +123,24 @@ export async function renderScheduleGridImage(sessions) {
   const hours = [...new Set(all.map((s) => Number(String(s.startTime).slice(0, 2))))].sort((a, b) => a - b);
   if (!hours.length) hours.push(7);
 
-  // Palette per subject so each column's cards read as one course.
-  const tints = ["#7c6cff", "#e0556a", "#2f9e8f", "#d98a2b", "#4a8fe7", "#c25f9e", "#8aa23c", "#5f6b8c"];
+  // The platform's own subject palette, verbatim from its shipped CSS
+  // (data-tint 0..5 → --eqc-ink / --eqc-soft). Using the page's real colours
+  // is what makes the grid read as "the site's table" instead of ours.
+  const TINTS = [
+    { ink: "#8b6cd9", soft: "#efe9fb" },
+    { ink: "#35a37f", soft: "#e2f4ec" },
+    { ink: "#e07a6a", soft: "#fdeae7" },
+    { ink: "#4a8fd4", soft: "#e7f1fc" },
+    { ink: "#cf9a2c", soft: "#fbf2da" },
+    { ink: "#a05fb5", soft: "#f6ebf9" },
+  ];
+  // Sessions carry their own tint from the API when available; otherwise
+  // assign one deterministically per subject so a course keeps one colour.
   const subjColor = new Map();
-  for (const s of all) if (s.subject && !subjColor.has(s.subject)) subjColor.set(s.subject, tints[subjColor.size % tints.length]);
+  const bySubject = new Map();
+  for (const s of all) if (s.subject && !bySubject.has(s.subject)) bySubject.set(s.subject, bySubject.size);
+  const colorFor = (s) =>
+    TINTS[(s.tint != null ? s.tint : bySubject.get(s.subject) ?? 0) % TINTS.length];
 
   const PAD = 28;
   const LABEL = 84; // right-side gutter for the time axis (RTL)
@@ -140,19 +154,20 @@ export async function renderScheduleGridImage(sessions) {
   const h = HEAD + hours.length * RH + 70;
 
   const parts = [];
-  // Time axis (right gutter, RTL)
+  // Time axis (right gutter, RTL) — the page's faint row rules
   for (let i = 0; i < hours.length; i++) {
     const y = yOf(i);
-    parts.push(`<line x1="${PAD}" y1="${y}" x2="${w - PAD}" y2="${y}" stroke="${C.line}" stroke-width="1"/>`);
-    parts.push(`<text x="${PAD + LABEL - 14}" y="${y + RH / 2 + 6}" font-family="${ARABIC_FONT}" font-size="19" fill="${C.sub}" text-anchor="end" direction="rtl">${hours[i]}:00</text>`);
+    parts.push(`<line x1="${PAD}" y1="${y}" x2="${w - PAD}" y2="${y}" stroke="rgba(124,92,191,.14)" stroke-width="1"/>`);
+    parts.push(`<text x="${PAD + LABEL - 14}" y="${y + RH / 2 + 6}" font-family="${ARABIC_FONT}" font-size="17" fill="#8a8798" text-anchor="end" direction="rtl">${hours[i]}:00</text>`);
   }
 
-  // Day headers, today highlighted like the site's .is-today
+  // Day headers, today highlighted like the site's .is-today gradient
   for (let i = 0; i < days.length; i++) {
     const x = xOf(i);
     const isToday = days[i] === today;
-    if (isToday) parts.push(`<rect x="${x}" y="36" width="${CW - 6}" height="${HEAD - 12}" rx="10" fill="${C.accent}" opacity="0.16"/>`);
-    parts.push(`<text x="${x + CW / 2 - 3}" y="62" font-family="${ARABIC_FONT}" font-size="21" font-weight="700" fill="${isToday ? C.accent : C.text}" text-anchor="middle" direction="rtl">${esc(fmtDayName(days[i]).split(" ")[0])}</text>`);
+    if (isToday) parts.push(`<rect x="${x}" y="36" width="${CW - 6}" height="${HEAD - 12}" rx="10" fill="#7c5cbf1f"/>`);
+    parts.push(`<line x1="${x}" y1="${36 + HEAD - 12}" x2="${x + CW - 6}" y2="${36 + HEAD - 12}" stroke="rgba(124,92,191,.14)" stroke-width="1"/>`);
+    parts.push(`<text x="${x + CW / 2 - 3}" y="60" font-family="${ARABIC_FONT}" font-size="20" font-weight="800" fill="${isToday ? "#7c5cbf" : "#2c2540"}" text-anchor="middle" direction="rtl">${esc(fmtDayName(days[i]).split(" ")[0])}</text>`);
   }
 
   // Slot lookup so a cancelled class and its replacement land in the same cell.
@@ -177,15 +192,23 @@ export async function renderScheduleGridImage(sessions) {
     const rows = live.length || cancelled.length;
     const cardH = Math.floor((RH - 10) / rows) - 4;
 
+    // Site-faithful card: soft fill, ink-coloured inset ring, and the
+    // cancelled variant at 52% opacity with its title struck through —
+    // the same recipe the platform's own CSS uses for .tt-class.
     const draw = (s, idx, pale) => {
       const cy = y + idx * (cardH + 4);
-      const tint = s.subject ? subjColor.get(s.subject) : C.accent;
+      const t = colorFor(s);
       const time = fmtClock(s.startTime);
-      parts.push(`<rect x="${x + 3}" y="${cy}" width="${CW - 12}" height="${cardH}" rx="7" fill="${tint}" opacity="${pale ? 0.13 : 0.2}"/>`);
-      parts.push(`<rect x="${x + 3}" y="${cy}" width="4" height="${cardH}" rx="2" fill="${tint}" opacity="${pale ? 0.35 : 0.9}"/>`);
-      parts.push(`<text x="${x + 14}" y="${cy + cardH / 2 + 1}" font-family="${ARABIC_FONT}" font-size="17" font-weight="${pale ? 400 : 700}" fill="${pale ? C.sub : C.text}" direction="rtl">${esc(s.title)}</text>`);
-      if (cardH > 40) {
-        parts.push(`<text x="${x + CW - 18}" y="${cy + cardH / 2 + 1}" font-family="${ARABIC_FONT}" font-size="14" fill="${C.sub}" text-anchor="end" direction="rtl">${esc(time)}${s.room ? " · " + esc(s.room) : ""}${pale ? " · ملغاة" : ""}</text>`);
+      const op = pale ? 0.52 : 1;
+      parts.push(`<rect x="${x + 3}" y="${cy}" width="${CW - 12}" height="${cardH}" rx="11" fill="${t.soft}" opacity="${op}"/>`);
+      parts.push(`<rect x="${x + 3.75}" y="${cy + 0.75}" width="${CW - 13.5}" height="${cardH - 1.5}" rx="10.25" fill="none" stroke="${t.ink}" stroke-opacity="0.32" stroke-width="1" opacity="${op}"/>`);
+      parts.push(`<text x="${x + 12}" y="${cy + Math.min(cardH * 0.5, 24)}" font-family="${ARABIC_FONT}" font-size="17" font-weight="800" fill="#2c2540" direction="rtl" opacity="${op}">${esc(s.title)}</text>`);
+      if (pale) {
+        const tw2 = Math.min(CW - 30, s.title.length * 10 + 6);
+        parts.push(`<line x1="${x + 12}" y1="${cy + Math.min(cardH * 0.5, 24) - 5}" x2="${x + 12 + tw2}" y2="${cy + Math.min(cardH * 0.5, 24) - 5}" stroke="#2c2540" stroke-width="1.2" opacity="0.55"/>`);
+      }
+      if (cardH > 38) {
+        parts.push(`<text x="${x + 12}" y="${cy + Math.min(cardH * 0.5, 24) + 19}" font-family="${ARABIC_FONT}" font-size="13" fill="#2c2540" fill-opacity="0.82" direction="rtl" opacity="${op}">${esc(time)}${s.room ? " · " + esc(s.room) : ""}${pale ? " · ملغاة" : ""}</text>`);
       }
     };
 
@@ -194,8 +217,9 @@ export async function renderScheduleGridImage(sessions) {
   }
 
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" direction="rtl">
-    <rect width="${w}" height="${h}" fill="${C.bg}"/>
-    ${header("🗓 جدولي الأسبوع", "نفس تخطيط المنصة — الحصص الملغاة باهتة")}
+    <rect width="${w}" height="${h}" fill="#ffffff"/>
+    <text x="${w / 2}" y="34" font-family="${ARABIC_FONT}" font-size="26" font-weight="700" fill="#2c2540" text-anchor="middle" direction="rtl">🗓 جدولي الأسبوعي</text>
+    <text x="${w / 2}" y="62" font-family="${ARABIC_FONT}" font-size="16" fill="#8a8798" text-anchor="middle" direction="rtl">نفس ألوان وتخطيط المنصة — الحصص الملغاة باهتة</text>
     ${parts.join("")}
   </svg>`;
   const liveCount = all.filter((s) => !s.cancelled).length;
