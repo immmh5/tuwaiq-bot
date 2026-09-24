@@ -172,7 +172,9 @@ export async function getSchedulePageHTML(accessToken) {
     },
     timeout: 40,
   });
-  return res.text;
+  // res.text is a function that returns the body string, not the string
+  // itself — calling it is what /site schedule was missing.
+  return await res.text();
 }
 
 // --- Notifications / announcements ------------------------------------------

@@ -112,9 +112,9 @@ export async function renderSiteSchedule(parsed, { width = 1080 } = {}) {
   let y0 = 96;
 
   // Header strip
-  parts.push(`<text x="${width/2}" y="34" font-family="Noto Sans Arabic" font-size="26" font-weight="700" fill="#2c2540" text-anchor="middle" direction="rtl">🗓 جدولي الأسبوعي</text>`);
+  parts.push(`<text x="${width/2}" y="34" font-family="Noto Sans Arabic, Noto Sans, sans-serif" font-size="26" font-weight="700" fill="#2c2540" text-anchor="middle" direction="rtl">🗓 جدولي الأسبوعي</text>`);
   if (weekRange) {
-    parts.push(`<text x="${width/2}" y="62" font-family="Noto Sans Arabic" font-size="17" fill="#8a8798" text-anchor="middle" direction="rtl">${esc(weekRange)}</text>`);
+    parts.push(`<text x="${width/2}" y="62" font-family="Noto Sans Arabic, Noto Sans, sans-serif" font-size="17" fill="#8a8798" text-anchor="middle" direction="rtl">${esc(weekRange)}</text>`);
   }
 
   // Day headers
@@ -124,8 +124,8 @@ export async function renderSiteSchedule(parsed, { width = 1080 } = {}) {
       parts.push(`<rect x="${x}" y="${y0}" width="${colW}" height="${HEAD_H - 4}" fill="#7c5cbf1f"/>`);
     }
     parts.push(`<line x1="${x}" y1="${y0 + HEAD_H - 4}" x2="${x + colW}" y2="${y0 + HEAD_H - 4}" stroke="rgba(124,92,191,.14)" stroke-width="1"/>`);
-    parts.push(`<text x="${x + colW/2}" y="${y0 + 24}" font-family="Noto Sans Arabic" font-size="18" font-weight="800" fill="#2c2540" text-anchor="middle" direction="rtl">${esc(days[i].name)}</text>`);
-    parts.push(`<text x="${x + colW/2}" y="${y0 + 44}" font-family="Noto Sans Arabic" font-size="14" fill="#8a8798" text-anchor="middle" direction="rtl">${esc(days[i].date)}</text>`);
+    parts.push(`<text x="${x + colW/2}" y="${y0 + 24}" font-family="Noto Sans Arabic, Noto Sans, sans-serif" font-size="18" font-weight="800" fill="#2c2540" text-anchor="middle" direction="rtl">${esc(days[i].name)}</text>`);
+    parts.push(`<text x="${x + colW/2}" y="${y0 + 44}" font-family="Noto Sans Arabic, Noto Sans, sans-serif" font-size="14" fill="#8a8798" text-anchor="middle" direction="rtl">${esc(days[i].date)}</text>`);
   }
 
   // Hour rows: the page labels 7ص..12م spaced evenly; reproduce that grid.
@@ -133,7 +133,7 @@ export async function renderSiteSchedule(parsed, { width = 1080 } = {}) {
   for (let i = 0; i < axis.length; i++) {
     const y = y0 + HEAD_H + (axis.length > 1 ? i * rowH : 0);
     parts.push(`<line x1="${PAD + AXIS_W}" y1="${y}" x2="${width - PAD}" y2="${y}" stroke="rgba(124,92,191,.08)" stroke-width="1"/>`);
-    parts.push(`<text x="${PAD + AXIS_W - 12}" y="${y + 6}" font-family="Noto Sans Arabic" font-size="15" fill="#8a8798" text-anchor="end" direction="rtl">${esc(axis[i])}</text>`);
+    parts.push(`<text x="${PAD + AXIS_W - 12}" y="${y + 6}" font-family="Noto Sans Arabic, Noto Sans, sans-serif" font-size="15" fill="#8a8798" text-anchor="end" direction="rtl">${esc(axis[i])}</text>`);
   }
 
   // Class cards, in the page's own positions and palette.
@@ -155,14 +155,14 @@ export async function renderSiteSchedule(parsed, { width = 1080 } = {}) {
     parts.push(card);
 
     const subjY = y + Math.min(h * 0.46, 26);
-    parts.push(`<text x="${x + 9}" y="${subjY}" font-family="Noto Sans Arabic" font-size="16" font-weight="800" fill="#2c2540" direction="rtl" opacity="${opacity}">${esc(c.subj)}</text>`);
+    parts.push(`<text x="${x + 9}" y="${subjY}" font-family="Noto Sans Arabic, Noto Sans, sans-serif" font-size="16" font-weight="800" fill="#2c2540" direction="rtl" opacity="${opacity}">${esc(c.subj)}</text>`);
     // cancelled subjects are struck through on the page
     if (c.cancelled) {
       const tw = Math.min(w - 18, c.subj.length * 9.5 + 6);
       parts.push(`<line x1="${x + 9}" y1="${subjY - 4}" x2="${x + 9 + tw}" y2="${subjY - 4}" stroke="#2c2540" stroke-width="1.2" opacity="0.55"/>`);
     }
     if (c.meta && h > 34) {
-      parts.push(`<text x="${x + 9}" y="${subjY + 19}" font-family="Noto Sans Arabic" font-size="13" fill="#2c2540" fill-opacity="0.82" direction="rtl" opacity="${opacity}">${esc(c.meta)}</text>`);
+      parts.push(`<text x="${x + 9}" y="${subjY + 19}" font-family="Noto Sans Arabic, Noto Sans, sans-serif" font-size="13" fill="#2c2540" fill-opacity="0.82" direction="rtl" opacity="${opacity}">${esc(c.meta)}</text>`);
     }
   }
 
@@ -171,7 +171,7 @@ export async function renderSiteSchedule(parsed, { width = 1080 } = {}) {
     const by = y0 + HEAD_H + gridH + 14;
     parts.push(`<rect x="${PAD + AXIS_W}" y="${by}" width="${gridW}" height="34" rx="17" fill="#e2f4ec"/>`);
     parts.push(`<circle cx="${PAD + AXIS_W + 20}" cy="${by + 17}" r="5" fill="#2e9d78"/>`);
-    parts.push(`<text x="${PAD + AXIS_W + 36}" y="${by + 23}" font-family="Noto Sans Arabic" font-size="15" font-weight="700" fill="#1f6b52" direction="rtl">جارية الآن: ${esc(nowText)}</text>`);
+    parts.push(`<text x="${PAD + AXIS_W + 36}" y="${by + 23}" font-family="Noto Sans Arabic, Noto Sans, sans-serif" font-size="15" font-weight="700" fill="#1f6b52" direction="rtl">جارية الآن: ${esc(nowText)}</text>`);
   }
 
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" direction="rtl">
