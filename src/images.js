@@ -110,18 +110,26 @@ function header(title, subtitle) {
 // exactly, so the image is the page's grid and not a re-interpretation.
 export async function renderScheduleGridImage(sessions) {
   const today = new Date().toISOString().slice(0, 10);
+  const toMin = (t) => {
+    const [h, m] = String(t || "0:0").split(":").map(Number);
+    return (h || 0) * 60 + (m || 0);
+  };
   const norm = (s) => ({
     ...s,
     day: String(s.date || "").slice(0, 10),
+    startMin: toMin(s.startTime),
+    endMin: toMin(s.endTime) || toMin(s.startTime) + 45,
     cancelled: s.status === "cancelled",
   });
   const all = (sessions || []).map(norm);
   const days = [...new Set(all.map((s) => s.day))].sort();
   if (!days.length) days.push(today);
 
-  // Distinct hours across the week become the row labels.
-  const hours = [...new Set(all.map((s) => Number(String(s.startTime).slice(0, 2))))].sort((a, b) => a - b);
-  if (!hours.length) hours.push(7);
+  // Open and close of the whole grid, in minutes — the site lays cards out
+  // on this same axis, positioning each by its real start/end times.
+  const lo = Math.min(...all.map((s) => s.startMin), 7 * 60);
+  const hi = Math.max(...all.map((s) => s.endMin), 13 * 60);
+  const SPAN = hi - lo;
 
   // The platform's own subject palette, verbatim from its shipped CSS
   // (data-tint 0..5 → --eqc-ink / --eqc-soft). Using the page's real colours
@@ -134,31 +142,37 @@ export async function renderScheduleGridImage(sessions) {
     { ink: "#cf9a2c", soft: "#fbf2da" },
     { ink: "#a05fb5", soft: "#f6ebf9" },
   ];
-  // Sessions carry their own tint from the API when available; otherwise
-  // assign one deterministically per subject so a course keeps one colour.
-  const subjColor = new Map();
-  const bySubject = new Map();
-  for (const s of all) if (s.subject && !bySubject.has(s.subject)) bySubject.set(s.subject, bySubject.size);
-  const colorFor = (s) =>
-    TINTS[(s.tint != null ? s.tint : bySubject.get(s.subject) ?? 0) % TINTS.length];
+  // Assign one tint per subject, in first-seen order, mirroring how the
+  // page assigns data-tint per offering.
+  const subjTint = new Map();
+  for (const s of all) if (s.subject && !subjTint.has(s.subject)) subjTint.set(s.subject, subjTint.size);
+  const colorFor = (s) => TINTS[(subjTint.get(s.subject) ?? 0) % TINTS.length];
 
   const PAD = 28;
   const LABEL = 84; // right-side gutter for the time axis (RTL)
   const HEAD = 64; // header row height
   const CW = Math.floor((1000 - PAD * 2 - LABEL) / days.length);
-  const RH = 74; // row height
+
+  // Vertical axis: one minute of class time maps to a fixed number of
+  // pixels, exactly like the site's 45-min = 67.5px grid. The whole grid
+  // stretches to fit the week's earliest start and latest end.
+  const TOP = HEAD + 8;
+  const PPM = 1.5; // px per minute (45 min → 67.5px, the site's own scale)
+  const h = TOP + SPAN * PPM + 70;
 
   const xOf = (i) => PAD + LABEL + i * CW;
-  const yOf = (i) => HEAD + i * RH;
   const w = 1000;
-  const h = HEAD + hours.length * RH + 70;
 
   const parts = [];
-  // Time axis (right gutter, RTL) — the page's faint row rules
-  for (let i = 0; i < hours.length; i++) {
-    const y = yOf(i);
+  // Hour rules and labels, every full hour the grid spans
+  const firstH = Math.floor(lo / 60);
+  const lastH = Math.ceil(hi / 60);
+  for (let hh = firstH; hh <= lastH; hh++) {
+    const y = TOP + (hh * 60 - lo) * PPM;
     parts.push(`<line x1="${PAD}" y1="${y}" x2="${w - PAD}" y2="${y}" stroke="rgba(124,92,191,.14)" stroke-width="1"/>`);
-    parts.push(`<text x="${PAD + LABEL - 14}" y="${y + RH / 2 + 6}" font-family="${ARABIC_FONT}" font-size="17" fill="#8a8798" text-anchor="end" direction="rtl">${hours[i]}:00</text>`);
+    parts.push(
+      `<text x="${PAD + LABEL - 14}" y="${y + 5}" font-family="${ARABIC_FONT}" font-size="16" fill="#8a8798" text-anchor="end" direction="rtl">${hh}:00</text>`
+    );
   }
 
   // Day headers, today highlighted like the site's .is-today gradient
@@ -166,54 +180,61 @@ export async function renderScheduleGridImage(sessions) {
     const x = xOf(i);
     const isToday = days[i] === today;
     if (isToday) parts.push(`<rect x="${x}" y="36" width="${CW - 6}" height="${HEAD - 12}" rx="10" fill="#7c5cbf1f"/>`);
-    parts.push(`<line x1="${x}" y1="${36 + HEAD - 12}" x2="${x + CW - 6}" y2="${36 + HEAD - 12}" stroke="rgba(124,92,191,.14)" stroke-width="1"/>`);
-    parts.push(`<text x="${x + CW / 2 - 3}" y="60" font-family="${ARABIC_FONT}" font-size="20" font-weight="800" fill="${isToday ? "#7c5cbf" : "#2c2540"}" text-anchor="middle" direction="rtl">${esc(fmtDayName(days[i]).split(" ")[0])}</text>`);
+    parts.push(`<line x1="${x}" y1="${HEAD + 4}" x2="${x + CW - 6}" y2="${HEAD + 4}" stroke="rgba(124,92,191,.14)" stroke-width="1"/>`);
+    parts.push(
+      `<text x="${x + CW / 2 - 3}" y="60" font-family="${ARABIC_FONT}" font-size="20" font-weight="800" fill="${isToday ? "#7c5cbf" : "#2c2540"}" text-anchor="middle" direction="rtl">${esc(fmtDayName(days[i]).split(" ")[0])}</text>`
+    );
   }
 
-  // Slot lookup so a cancelled class and its replacement land in the same cell.
-  const slotOf = (s) => {
-    const d = days.indexOf(s.day);
-    const hh = Number(String(s.startTime).slice(0, 2));
-    return { col: d, row: hours.indexOf(hh) };
-  };
+  // Group per day+slot. Overlapping sessions in one slot — the cancelled
+  // original beside its replacement, or a genuine double period — share the
+  // column side by side instead of being squeezed into stacked thin rows,
+  // which is what the site itself does.
+  const slotKey = (s) => `${s.day}|${s.startMin}`;
   const bySlot = new Map();
   for (const s of all) {
-    const k = `${slotOf(s).col}|${slotOf(s).row}`;
-    if (!bySlot.has(k)) bySlot.set(k, []);
-    bySlot.get(k).push(s);
+    if (!bySlot.has(slotKey(s))) bySlot.set(slotKey(s), []);
+    bySlot.get(slotKey(s)).push(s);
   }
 
-  for (const [key, items] of bySlot) {
-    const [col, row] = key.split("|").map(Number);
+  for (const [, items] of bySlot) {
+    const s0 = items[0];
+    const col = days.indexOf(s0.day);
     const x = xOf(col);
-    const y = yOf(row) + 4;
-    const live = items.filter((s) => !s.cancelled);
-    const cancelled = items.filter((s) => s.cancelled);
-    const rows = live.length || cancelled.length;
-    const cardH = Math.floor((RH - 10) / rows) - 4;
+    const yTop = TOP + (s0.startMin - lo) * PPM + 2;
+    const cardH = Math.max((s0.endMin - s0.startMin) * PPM - 4, 44);
+    const n = items.length;
+    const subW = (CW - 12) / n;
 
     // Site-faithful card: soft fill, ink-coloured inset ring, and the
     // cancelled variant at 52% opacity with its title struck through —
     // the same recipe the platform's own CSS uses for .tt-class.
     const draw = (s, idx, pale) => {
-      const cy = y + idx * (cardH + 4);
+      const cx = x + 6 + idx * subW;
       const t = colorFor(s);
       const time = fmtClock(s.startTime);
       const op = pale ? 0.52 : 1;
-      parts.push(`<rect x="${x + 3}" y="${cy}" width="${CW - 12}" height="${cardH}" rx="11" fill="${t.soft}" opacity="${op}"/>`);
-      parts.push(`<rect x="${x + 3.75}" y="${cy + 0.75}" width="${CW - 13.5}" height="${cardH - 1.5}" rx="10.25" fill="none" stroke="${t.ink}" stroke-opacity="0.32" stroke-width="1" opacity="${op}"/>`);
-      parts.push(`<text x="${x + 12}" y="${cy + Math.min(cardH * 0.5, 24)}" font-family="${ARABIC_FONT}" font-size="17" font-weight="800" fill="#2c2540" direction="rtl" opacity="${op}">${esc(s.title)}</text>`);
+      const tx = cx + subW / 2;
+      parts.push(`<rect x="${cx}" y="${yTop}" width="${subW - 4}" height="${cardH}" rx="11" fill="${t.soft}" opacity="${op}"/>`);
+      parts.push(`<rect x="${cx + 0.75}" y="${yTop + 0.75}" width="${subW - 5.5}" height="${cardH - 1.5}" rx="10.25" fill="none" stroke="${t.ink}" stroke-opacity="0.32" stroke-width="1" opacity="${op}"/>`);
+      parts.push(`<text x="${tx}" y="${yTop + Math.min(cardH * 0.5, 24)}" font-family="${ARABIC_FONT}" font-size="17" font-weight="800" fill="#2c2540" text-anchor="middle" direction="rtl" opacity="${op}">${esc(s.title)}</text>`);
       if (pale) {
-        const tw2 = Math.min(CW - 30, s.title.length * 10 + 6);
-        parts.push(`<line x1="${x + 12}" y1="${cy + Math.min(cardH * 0.5, 24) - 5}" x2="${x + 12 + tw2}" y2="${cy + Math.min(cardH * 0.5, 24) - 5}" stroke="#2c2540" stroke-width="1.2" opacity="0.55"/>`);
+        const tw2 = Math.min(subW - 18, s.title.length * 10 + 6);
+        parts.push(`<line x1="${tx - tw2 / 2}" y1="${yTop + Math.min(cardH * 0.5, 24) - 5}" x2="${tx + tw2 / 2}" y2="${yTop + Math.min(cardH * 0.5, 24) - 5}" stroke="#2c2540" stroke-width="1.2" opacity="0.55"/>`);
       }
-      if (cardH > 38) {
-        parts.push(`<text x="${x + 12}" y="${cy + Math.min(cardH * 0.5, 24) + 19}" font-family="${ARABIC_FONT}" font-size="13" fill="#2c2540" fill-opacity="0.82" direction="rtl" opacity="${op}">${esc(time)}${s.room ? " · " + esc(s.room) : ""}${pale ? " · ملغاة" : ""}</text>`);
+      if (cardH > 40 && n === 1) {
+        parts.push(
+          `<text x="${cx + 10}" y="${yTop + Math.min(cardH * 0.5, 24) + 19}" font-family="${ARABIC_FONT}" font-size="13" fill="#2c2540" fill-opacity="0.82" direction="rtl" opacity="${op}">${esc(time)}${s.room ? " · " + esc(s.room) : ""}${pale ? " · ملغاة" : ""}</text>`
+        );
       }
     };
 
-    live.forEach((s, i) => draw(s, i, false));
-    cancelled.forEach((s, i) => draw(s, live.length + i, true));
+    // A cancelled class is drawn pale next to its replacement; if the slot
+    // has no live session the cancelled one still shows, on its own.
+    const cancelled = items.filter((s) => s.cancelled);
+    const live = items.filter((s) => !s.cancelled);
+    const order = [...live, ...cancelled];
+    order.forEach((s, i) => draw(s, i, s.cancelled));
   }
 
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" direction="rtl">
