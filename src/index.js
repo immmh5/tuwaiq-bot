@@ -156,6 +156,8 @@ function registerCommands() {
   // Short Arabic descriptions shown next to each value in the panel body.
   const SETTING_HINTS = {
     schedule_orientation: "الاتجاه",
+    schedule_direction: "الكتابة",
+    schedule_clean_names: "الأسماء",
     schedule_show_room: "القاعة",
     notify_digest: "النوع",
     remind_hours: "التذكير",
@@ -202,22 +204,36 @@ function registerCommands() {
 
   // Quick actions row attached to the schedule image — the student sees the
   // table and can flip its orientation without leaving the chat.
-  onCallback("flip", async ({ chatId, messageId, arg, queryId }) => {
-    const cfg = await getSettings(chatId);
-    const next = cfg.schedule_orientation === "days_top" ? "days_left" : "days_top";
-    await setSetting(chatId, "schedule_orientation", next);
-    await answerCallbackQuery(queryId, `✅ ${LABELS.schedule_orientation[next]}`);
-    // Re-render and send the new image.
+  async function rerenderGrid(chatId, cfg) {
     const tokens = await getTokens();
     const items = (await fetchScope("schedule", tokens.accessToken)).filter(
       (s) => String(s.status || "").toLowerCase() !== "cancelled"
     );
     const { renderScheduleGridImage } = await import("./images.js");
-    const out = await renderScheduleGridImage(items, {
-      orientation: next,
+    return renderScheduleGridImage(items, {
+      orientation: cfg.schedule_orientation,
       showRoom: cfg.schedule_show_room !== false,
+      direction: cfg.schedule_direction === "ltr" ? "ltr" : "rtl",
+      cleanNames: cfg.schedule_clean_names !== false,
     });
+  }
+
+  onCallback("flip", async ({ chatId, queryId }) => {
+    const cfg = await getSettings(chatId);
+    const next = cfg.schedule_orientation === "days_top" ? "days_left" : "days_top";
+    await setSetting(chatId, "schedule_orientation", next);
+    await answerCallbackQuery(queryId, `✅ ${LABELS.schedule_orientation[next]}`);
+    const out = await rerenderGrid(chatId, { ...cfg, schedule_orientation: next });
     await sendPhoto(chatId, out.png, `${out.caption} — ${LABELS.schedule_orientation[next]}`);
+  });
+
+  onCallback("flipdir", async ({ chatId, queryId }) => {
+    const cfg = await getSettings(chatId);
+    const next = cfg.schedule_direction === "ltr" ? "rtl" : "ltr";
+    await setSetting(chatId, "schedule_direction", next);
+    await answerCallbackQuery(queryId, `✅ ${LABELS.schedule_direction[next]}`);
+    const out = await rerenderGrid(chatId, { ...cfg, schedule_direction: next });
+    await sendPhoto(chatId, out.png, `${out.caption} — ${LABELS.schedule_direction[next]}`);
   });
 
   on("/status", async ({ chatId }) => {
@@ -267,6 +283,50 @@ function registerCommands() {
       await sendMessage(chatId, `✅ تم الفحص\n${counts}\n🆕 جديد: ${r.fresh}${renderNote}`);
     } else {
       await sendMessage(chatId, `❌ فشل: <code>${escapeHtml(r.error)}</code>${renderNote}`);
+    }
+  });
+
+  // Proof of freshness: pull the schedule straight from the platform and
+  // report the exact payload the bot just saw, with the fetch time. This is
+  // the answer to "does the bot really read the site, or is it showing me
+  // something it stored?" — nothing here is cached.
+  on("/fresh", async ({ chatId }) => {
+    if (!(await requireLogin(chatId))) return;
+    await sendMessage(chatId, "🔄 أجيب بيانات حية من المنصة الحين…").catch(() => {});
+    const t0 = Date.now();
+    try {
+      const tokens = await getTokens();
+      const items = await fetchScope("schedule", tokens.accessToken);
+      const live = (items || []).filter(
+        (s) => String(s.status || "").toLowerCase() !== "cancelled"
+      );
+      const ms = Date.now() - t0;
+      const stamp = new Date().toLocaleString("ar-SA", {
+        timeZone: "Asia/Riyadh",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+      });
+      const first = live[0];
+      await sendMessage(
+        chatId,
+        [
+          "✅ <b>جبتها من المنصة مباشرة</b>",
+          `🕐 وقت الجلب: <code>${stamp}</code> (${ms}ms)`,
+          `📡 الرد: <code>${items.length}</code> جلسة، <code>${live.length}</code> فعلي`,
+          first
+            ? `🔍 أول حصة: <code>${escapeHtml(first.title)}</code> · ${escapeHtml(
+                String(first.startTime || "")
+              )}</code>`
+            : "",
+          "",
+          "<i>كل شي تشوفه يجي من sc.tuwaiq.edu.sa وقت ما تطلبه — ما عندي نسخة محفوظة.</i>",
+        ]
+          .filter(Boolean)
+          .join("\n")
+      );
+    } catch (err) {
+      await sendMessage(chatId, `⚠️ ما قدرت: <code>${escapeHtml(err.message)}</code>`);
     }
   });
 
@@ -825,17 +885,19 @@ function registerCommands() {
           await sendMessage(chatId, "ما في بيانات للجدول الحين.");
           return;
         }
-        // Honour the student's chosen orientation and room visibility.
+        // Honour the student's chosen orientation, direction and room.
         const cfg = await getSettings(chatId);
         const live = items.filter((s) => String(s.status || "").toLowerCase() !== "cancelled");
         const out = await renderScheduleGridImage(live, {
           orientation: cfg.schedule_orientation,
           showRoom: cfg.schedule_show_room !== false,
+          direction: cfg.schedule_direction === "ltr" ? "ltr" : "rtl",
+          cleanNames: cfg.schedule_clean_names !== false,
         });
         await sendPhoto(chatId, out.png, out.caption);
         // Then a small control row so the table can be flipped in place.
         await sendButtons(chatId, "أو تتحكم بالجدول من هنا:", [
-          [{ label: "🔄 اقلب الاتجاه", action: "flip" }],
+          [{ label: "🔄 اقلب الاتجاه", action: "flip" }, { label: " ↔️ يمين/يسار", action: "flipdir" }],
           [{ label: "⚙️ كل الإعدادات", action: "open_settings" }],
         ]);
         return;
@@ -920,6 +982,7 @@ const HELP_TEXT = `<b>🤖 أوامر بوت طويق</b>
 <b>التحكم:</b>
 /status — حالة البوت
 /check — فحص فوري
+/fresh — ✅ أثبت إن البيانات من المنصة الحين
 /settings — ⚙️ لوحة الإعدادات (أزرار)
 /watch assignments on|off — تشغيل/إيقاف مراقبة نطاق
 /interval 15 — تغيير دقيقة الفحص

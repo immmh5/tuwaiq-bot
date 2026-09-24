@@ -112,8 +112,13 @@ export async function renderScheduleGridImage(sessions, opts = {}) {
   const today = new Date().toISOString().slice(0, 10);
   // opts.orientation: "days_top" (the site's layout) or "days_left".
   // opts.showRoom: draw the room under each class.
+  // opts.direction: "rtl" (Arabic, default) or "ltr" — which side the first
+  //   day column starts from.
+  // opts.cleanNames: strip the "2-1" group suffix from subject names.
   const orientation = opts.orientation === "days_left" ? "days_left" : "days_top";
   const showRoom = opts.showRoom !== false;
+  const rtl = opts.direction !== "ltr";
+  const cleanNames = opts.cleanNames !== false;
   const toMin = (t) => {
     const [h, m] = String(t || "0:0").split(":").map(Number);
     return (h || 0) * 60 + (m || 0);
@@ -131,6 +136,17 @@ export async function renderScheduleGridImage(sessions, opts = {}) {
     startMin: toMin(s.startTime),
     endMin: toMin(s.endTime) || toMin(s.startTime) + 45,
   });
+  // The platform appends a group suffix to most subject names — "احياء 2-1",
+  // "اللغة الانجليزية 2-1" — which is noise in a one-student timetable. This
+  // trims any trailing token made of digits, dashes and dots, leaving the
+  // subject itself.
+  const cleanTitle = (t) => {
+    if (!cleanNames) return t;
+    return String(t || "")
+      .replace(/\s*[-–]\s*\d+(\.\d+)?\s*$/, "") // trailing "-1" / "-2.1"
+      .replace(/\s+\d+[-–]\d+\s*$/, "") // trailing "2-1"
+      .trim();
+  };
   // The platform sends status capitalised ("Cancelled", "Pending"), so the
   // comparison is case-insensitive — a case-sensitive filter was letting
   // cancelled classes through and the student saw them in the table.
@@ -168,6 +184,11 @@ export async function renderScheduleGridImage(sessions, opts = {}) {
   // days_left swaps them. Both share one cell math, so a card always sits
   // inside its cell and the header above it lines up exactly.
   const daysTop = orientation === "days_top";
+  const nXAxis = daysTop ? days.length : slots.length;
+  // Text direction. In rtl the first day (Sunday) sits at the right edge
+  // and the week runs leftward, which is how the platform itself lays it
+  // out. In ltr the first day is at the left.
+  const colRank = (i) => (rtl ? nXAxis - 1 - i : i);
   const PAD = 26;
   const GUTTER = 76;
   const TITLE_H = 82;
@@ -189,16 +210,16 @@ export async function renderScheduleGridImage(sessions, opts = {}) {
   if (daysTop) {
     for (let i = 0; i < days.length; i++) {
       const isToday = days[i] === today;
-      const cx = PAD + GUTTER + i * cellW + cellW / 2;
+      const cx = PAD + GUTTER + colRank(i) * cellW + cellW / 2;
       if (isToday) parts.push(`<rect x="${cx - cellW / 2 + 2}" y="${TITLE_H}" width="${cellW - 6}" height="${HEAD_H - 8}" rx="10" fill="#7c5cbf1f"/>`);
-      parts.push(`<text x="${cx}" y="${TITLE_H + 30}" font-family="${ARABIC_FONT}" font-size="19" font-weight="800" fill="${isToday ? "#7c5cbf" : "#2c2540"}" text-anchor="middle" direction="rtl">${esc(fmtDayName(days[i]).split(" ")[0])}</text>`);
+      parts.push(`<text x="${cx}" y="${TITLE_H + 30}" font-family="${ARABIC_FONT}" font-size="19" font-weight="800" fill="${isToday ? "#7c5cbf" : "#2c2540"}" text-anchor="middle" direction="${rtl ? "rtl" : "ltr"}">${esc(fmtDayName(days[i]).split(" ")[0])}</text>`);
     }
     for (let j = 0; j < slots.length; j++) {
       parts.push(`<text x="${PAD + GUTTER - 12}" y="${TITLE_H + HEAD_H + j * ROW_H + ROW_H / 2 + 5}" font-family="${ARABIC_FONT}" font-size="15" fill="#8a8798" text-anchor="end" direction="rtl">${fmtSlot(slots[j])}</text>`);
     }
   } else {
     for (let j = 0; j < slots.length; j++) {
-      const cx = PAD + GUTTER + j * cellW + cellW / 2;
+      const cx = PAD + GUTTER + colRank(j) * cellW + cellW / 2;
       parts.push(`<text x="${cx}" y="${TITLE_H + 30}" font-family="${ARABIC_FONT}" font-size="15" fill="#8a8798" text-anchor="middle" direction="rtl">${fmtSlot(slots[j])}</text>`);
     }
     for (let i = 0; i < days.length; i++) {
@@ -225,7 +246,9 @@ export async function renderScheduleGridImage(sessions, opts = {}) {
   const cellOf = (s) => {
     const di = days.indexOf(s.day);
     const si = slots.indexOf(s.startMin);
-    return daysTop ? { x: di, y: si } : { x: si, y: di };
+    // In days_top the day is the column, so direction applies to it. In
+    // days_left the slot time is the column, so direction applies there.
+    return daysTop ? { x: colRank(di), y: si } : { x: colRank(si), y: di };
   };
   const byCell = new Map();
   for (const s of all) {
@@ -271,7 +294,7 @@ export async function renderScheduleGridImage(sessions, opts = {}) {
       parts.push(`<rect x="${cx + 3}" y="${cy}" width="${innerW}" height="${subH}" rx="10" fill="${t.soft}"/>`);
       parts.push(`<rect x="${cx + 3.75}" y="${cy + 0.75}" width="${innerW - 1.5}" height="${subH - 1.5}" rx="9.25" fill="none" stroke="${t.ink}" stroke-opacity="0.32" stroke-width="1"/>`);
 
-      const lines = wrapText(s.title, innerW - 14, 15);
+      const lines = wrapText(cleanTitle(s.title), innerW - 14, 15);
       const lineH = 19;
       const textTop = cy + (subH - lines.length * lineH) / 2 + 14;
       lines.forEach((ln, li) => {
@@ -299,9 +322,19 @@ export async function renderScheduleGridImage(sessions, opts = {}) {
   const liveCount = all.length;
   const countWord =
     liveCount === 1 ? "حصة واحدة" : liveCount === 2 ? "حصتين" : `${liveCount} حصص`;
+  // Provenance: the image is built from a live platform payload, and the
+  // stamp says exactly when that payload was fetched, so the student can
+  // see the data is fresh rather than taken from a stored snapshot.
+  const stamp = new Date().toLocaleString("ar-SA", {
+    timeZone: "Asia/Riyadh",
+    hour: "2-digit",
+    minute: "2-digit",
+    day: "2-digit",
+    month: "2-digit",
+  });
   return {
     png: await toPng(svg, 1600),
-    caption: `🗓 جدولك الأسبوعي — ${countWord}`,
+    caption: `🗓 جدولك الأسبوعي — ${countWord}\n🔄 من المنصة مباشرة · ${stamp}`,
     diag,
   };
 }

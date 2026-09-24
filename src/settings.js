@@ -13,6 +13,13 @@ const DEFAULTS = {
   //                 layout, and the default)
   //   days_left   — days down the left side, times across the top
   schedule_orientation: "days_top",
+  // Text direction of the table.
+  //   rtl — right to left (Arabic, the default)
+  //   ltr — left to right
+  schedule_direction: "rtl",
+  // Strip the group suffix the platform appends to subject names
+  // ("احياء 2-1" → "احياء").
+  schedule_clean_names: true,
   // Show the room under each class in the grid.
   schedule_show_room: true,
   // How the bot greets a fresh item: one message per item, or a single
@@ -32,6 +39,8 @@ export const LABELS = {
     days_top: "أيام أفقيًا (مثل المنصة)",
     days_left: "أيام رأسيًا",
   },
+  schedule_direction: { rtl: "اتجاه: يمين ← يسار", ltr: "اتجاه: يسار ← يمين" },
+  schedule_clean_names: { true: "تنظيف الأسماء: نعم", false: "تنظيف الأسماء: لا" },
   schedule_show_room: { true: "القاعة: ظاهرة", false: "القاعة: مخفية" },
   notify_digest: { true: "تنبيهات: مجمّعة", false: "تنبيهات: فردية" },
   remind_hours: { 24: "قبل ٢٤ ساعة", 12: "قبل ١٢ ساعة", 48: "قبل ٤٨ ساعة", 6: "قبل ٦ ساعات" },
@@ -84,7 +93,7 @@ export const SETTING_NAMES = Object.keys(DEFAULTS);
 export const PANEL = [
   {
     title: "🗓 الجدول",
-    items: ["schedule_orientation", "schedule_show_room"],
+    items: ["schedule_orientation", "schedule_direction", "schedule_clean_names", "schedule_show_room"],
   },
   {
     title: "🔔 التنبيهات",
