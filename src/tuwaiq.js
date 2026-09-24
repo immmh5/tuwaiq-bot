@@ -1,5 +1,5 @@
 // src/tuwaiq.js — typed client for the student API endpoints
-import { fetchJson } from "./http.js";
+import { fetchJson, fetch } from "./http.js";
 
 const BASE = "https://sc.tuwaiq.edu.sa/api/v1";
 
@@ -156,6 +156,23 @@ async function _getMySchedule(accessToken, weekStart) {
   return fetchJson(`${BASE}/subjectofferings/my-schedule?${q}now=${encodeURIComponent(new Date().toISOString())}`, {
     headers: authHeaders(accessToken),
   });
+}
+
+// Fetch the rendered /student/schedule page HTML. The timetable is
+// server-rendered into #root, so one authenticated GET carries the full
+// .tt grid — exactly what the student sees, including substitutions and the
+// live-class strip. Used to screenshot the site's own table.
+export async function getSchedulePageHTML(accessToken) {
+  const res = await fetch("https://sc.tuwaiq.edu.sa/student/schedule", {
+    method: "GET",
+    headers: {
+      ...authHeaders(accessToken),
+      Accept: "text/html,application/xhtml+xml",
+      Referer: "https://sc.tuwaiq.edu.sa/dashboard",
+    },
+    timeout: 40,
+  });
+  return res.text;
 }
 
 // --- Notifications / announcements ------------------------------------------

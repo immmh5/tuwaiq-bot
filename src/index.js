@@ -511,6 +511,46 @@ function registerCommands() {
   // Raw JSON export for anything the structured commands don't cover yet.
   // Deadline-reminder switch: "باقيلك بس يوم لا يفوتك" on or off.
   // Stored in reminders_config so it survives restarts.
+  // Telegram commands can't contain spaces, so multi-word scopes are joined
+  // with an underscore — they register cleanly and show as one command.
+  on("/img_grid", async (ctx) => onImg(ctx, "grid"));
+  on("/img_schedule", async (ctx) => onImg(ctx, "schedule"));
+  on("/img_assignments", async (ctx) => onImg(ctx, "assignments"));
+  on("/img_grades", async (ctx) => onImg(ctx, "grades"));
+
+  // Screenshot the site's own schedule page: fetch the rendered HTML and
+  // redraw the exact .tt grid in the platform's own colours. This is the
+  // "give me the table as it looks on the website" command — substitutions,
+  // the cancelled strikethrough, and the live-class banner all come through.
+  on("/site", async ({ chatId, args }) => {
+    if (!(await requireLogin(chatId))) return;
+    const scope = String(args[0] || "schedule");
+    if (scope !== "schedule") {
+      await sendMessage(chatId, "📸 الحين يدعم: <code>/site schedule</code>");
+      return;
+    }
+    const tokens = await getTokens();
+    await sendMessage(chatId, "📸 بجيب جدولك من المنصة…").catch(() => {});
+    try {
+      const { getSchedulePageHTML } = await import("./tuwaiq.js");
+      const { parseScheduleHTML, renderSiteSchedule } = await import("./schedule-dom.js");
+      const html = await getSchedulePageHTML(tokens.accessToken);
+      const parsed = parseScheduleHTML(html);
+      if (!parsed.classes.length) {
+        await sendMessage(chatId, "ما لقيت جدول في الصفحة الحين.");
+        return;
+      }
+      const { png } = await renderSiteSchedule(parsed);
+      await sendPhoto(
+        chatId,
+        png,
+        `📸 جدولك مثل ما يظهر في المنصة — ${parsed.classes.length} حصة\n<i>${esc(parsed.nowText ? "جارية الآن: " + parsed.nowText : "ما في حصة شغّالة الحين")}</i>`
+      );
+    } catch (err) {
+      await sendMessage(chatId, `⚠️ ما قدرت أصوّر الصفحة: <code>${esc(err.message)}</code>`);
+    }
+  });
+
   on("/remind", async ({ chatId, args }) => {
     const arg = String(args[0] || "").toLowerCase();
     const cfg = await getKv("reminders_config", { enabled: true });
@@ -581,15 +621,22 @@ function registerCommands() {
 
   // Send a rendered PNG image of a scope — schedule, assignments or grades.
   on("/img", async ({ chatId, args }) => {
+    const scope = args[0] || "schedule";
+    await onImg({ chatId }, scope);
+  });
+
+  // Telegram commands can't contain spaces, so multi-word scopes are joined
+  // with an underscore — they register cleanly and show as one command.
+  // Shared by /img <scope> and the /img_<scope> shortcuts.
+  async function onImg({ chatId }, scope) {
     if (!(await requireLogin(chatId))) return;
-    const scope = args[0];
     const valid = ["schedule", "assignments", "grades", "grid"];
     if (!valid.includes(scope)) {
       await sendMessage(
         chatId,
         "🖼 <b>صورة</b>\n\nالاستعمال: <code>/img &lt;نطاق&gt;</code>\n\n<code>" +
           valid.join("</code> · <code>") +
-          "</code>\n\n<i>مثال: /img schedule — الجدول كصورة مرتبة\n/img grid — نفس تخطيط المنصة بالضبط (أيام كأعمدة وأوقات كصفوف)</i>"
+          "</code>\n\n<i>/img_schedule — الجدول كصورة مرتبة\n/img_grid — شبكة الأيام والأوقات\nأو بكلمة: /img schedule</i>"
       );
       return;
     }
@@ -621,7 +668,7 @@ function registerCommands() {
     } catch (err) {
       await sendMessage(chatId, `⚠️ ما قدرت أصوّر: <code>${esc(err.message)}</code>`);
     }
-  });
+  }
 
   on("/export", async ({ chatId, args }) => {
     if (!(await requireLogin(chatId))) return;
@@ -661,7 +708,17 @@ const HELP_TEXT = `<b>🤖 أوامر بوت طويق</b>
 /notifications — الإشعارات
 /unread — عدد الإشعارات غير المقروءة
 /download 12 — تحميل مادة برقمها
-/img schedule — صورة للجدول/الواجبات/الدرجات
+
+<b>📸 الصور:</b>
+/img schedule — الجدول كصورة مرتبة
+/img grid — الجدول بشبكة الأيام والأوقات
+/img assignments — الواجبات كصورة
+/img grades — الدرجات كصورة
+/site schedule — <b>صورة الجدول مثل ما يظهر في المنصة بالضبط</b>
+
+<b>⏰ التنبيهات:</b>
+/remind on — تنبيه "باقيلك بس يوم" (on/off)
+/newalerts on — تنبيهات الشي الجديد (on/off)
 /history 10 — استرجع آخر محادثات
 /forget — امسح ذاكرة المحادثة
 /export grades — تصدير JSON لأي نطاق
