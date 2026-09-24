@@ -874,9 +874,16 @@ function registerCommands() {
           await sendMessage(chatId, "ما في بيانات للجدول الحين.");
           return;
         }
-        // Honour the student's chosen orientation, direction and room.
         const cfg = await getSettings(chatId);
-        const live = items.filter((s) => String(s.status || "").toLowerCase() !== "cancelled");
+        const live = items
+          .filter((s) => String(s.status || "").toLowerCase() !== "cancelled")
+          // Give the renderer the fields it reads: subjectName for the card
+          // label, date/startTime/endTime for the slot, room for the meta.
+          .map((s) => ({
+            ...s,
+            subject: s.subjectName || s.title,
+            date: (s.sessionDate || "").slice(0, 10),
+          }));
         const out = await renderScheduleGridImage(live, {
           orientation: cfg.schedule_orientation,
           showRoom: cfg.schedule_show_room !== false,

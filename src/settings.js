@@ -94,6 +94,11 @@ export async function cycleSetting(chatId, name) {
   const cur = String(all[name]);
   const idx = allowed.indexOf(cur);
   const next = allowed[(idx + 1) % allowed.length];
+  // "true"/"false" must land as real booleans — the renderers compare with
+  // !== false, and a string "false" is not false, which silently kept every
+  // boolean toggle stuck on its default.
+  const asBool = next === "true" ? true : next === "false" ? false : null;
+  if (asBool !== null) return setSetting(chatId, name, asBool);
   const numeric = Number(next);
   return setSetting(chatId, name, Number.isFinite(numeric) && next !== "" ? numeric : next);
 }

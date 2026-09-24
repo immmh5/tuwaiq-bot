@@ -137,9 +137,10 @@ export async function renderScheduleGridImage(sessions, opts = {}) {
     endMin: toMin(s.endTime) || toMin(s.startTime) + 45,
   });
   // The platform appends a group suffix to most subject names — "احياء 2-1",
-  // "اللغة الانجليزية 2-1" — which is noise in a one-student timetable. This
-  // trims any trailing group marker: a digit-and-dash token standing alone
-  // at the end of the name, in any of the forms the platform uses.
+  // "اللغة الانجليزية 2-1" — which is noise in a one-student timetable. The
+  // raw title field is worse ("احياء 2-1 - ثاني ثانوي 203"), so subjectName
+  // is the source. This trims any trailing group marker in the forms the
+  // platform uses, and leaves a subject that has no suffix untouched.
   const cleanTitle = (t) => {
     if (!cleanNames) return t;
     return String(t || "")
@@ -149,6 +150,9 @@ export async function renderScheduleGridImage(sessions, opts = {}) {
       .replace(/\s+[-–]?\d+(?:\.\d+)?\s*$/, "")
       .trim();
   };
+  // subjectName is the clean course name; title carries a section suffix
+  // ("احياء 2-1 - ثاني ثانوي 203") that only gets in the way.
+  const nameOf = (s) => cleanTitle(s.subject || s.subjectName || s.title || "");
   // The platform sends status capitalised ("Cancelled", "Pending"), so the
   // comparison is case-insensitive — a case-sensitive filter was letting
   // cancelled classes through and the student saw them in the table.
@@ -204,17 +208,24 @@ export async function renderScheduleGridImage(sessions, opts = {}) {
   const gridH = ROW_H * nY;
   const h = TITLE_H + HEAD_H + gridH + PAD;
 
-  // Direction is a real flip, not just column order:
-  //  - the time/day gutter sits on the right in rtl, on the left in ltr
-  //  - text inside a card starts from the matching edge and runs that way
+  // Direction is a real flip, not just column order. Every x below is
+  // derived from these two edges, so the whole table — gutter, cards and
+  // every label inside them — flips together and nothing is left stranded
+  // off the canvas:
+  //   rtl: the time gutter runs down the right edge, grid fills the rest
+  //   ltr: the gutter is on the left, grid fills the rest
   const DIR = rtl ? "rtl" : "ltr";
-  const gutterX = rtl ? W - PAD - GUTTER : PAD;
   const gridX0 = rtl ? PAD : PAD + GUTTER;
   const gridX1 = rtl ? W - PAD - GUTTER : W - PAD;
   const gridW2 = gridX1 - gridX0;
   const cellW2 = gridW2 / nX;
-  // Card text anchor: rtl starts at the right edge of the card, ltr at the
-  // left, so the label hugs its own side of the table in both modes.
+  // The gutter's text edge: where a slot label's anchor sits. In rtl that
+  // is the left edge of the gutter (label hangs left of the grid), in ltr
+  // the right edge.
+  const gutterTextX = rtl ? gridX1 + 12 : gridX0 - 12;
+  const gutterAnchor = rtl ? "start" : "end";
+  // Card text hugs the leading edge of its own card in the table's
+  // direction, so a label never collides with the gutter.
   const textAnchor = rtl ? "end" : "start";
   const textX = (cx, pad) => (rtl ? cx + cellW2 - pad : cx + pad);
 
@@ -229,7 +240,7 @@ export async function renderScheduleGridImage(sessions, opts = {}) {
       parts.push(`<text x="${cx}" y="${TITLE_H + 30}" font-family="${ARABIC_FONT}" font-size="19" font-weight="800" fill="${isToday ? "#7c5cbf" : "#2c2540"}" text-anchor="middle" direction="${DIR}">${esc(fmtDayName(days[i]).split(" ")[0])}</text>`);
     }
     for (let j = 0; j < slots.length; j++) {
-      parts.push(`<text x="${rtl ? gutterX + GUTTER - 12 : gutterX + GUTTER - 12}" y="${TITLE_H + HEAD_H + j * ROW_H + ROW_H / 2 + 5}" font-family="${ARABIC_FONT}" font-size="15" fill="#8a8798" text-anchor="${textAnchor}" direction="${DIR}">${fmtSlot(slots[j])}</text>`);
+      parts.push(`<text x="${gutterTextX}" y="${TITLE_H + HEAD_H + j * ROW_H + ROW_H / 2 + 5}" font-family="${ARABIC_FONT}" font-size="15" fill="#8a8798" text-anchor="${gutterAnchor}" direction="${DIR}">${fmtSlot(slots[j])}</text>`);
     }
   } else {
     for (let j = 0; j < slots.length; j++) {
@@ -240,7 +251,7 @@ export async function renderScheduleGridImage(sessions, opts = {}) {
       const isToday = days[i] === today;
       const ry = TITLE_H + HEAD_H + i * ROW_H;
       if (isToday) parts.push(`<rect x="${PAD}" y="${ry}" width="${W - PAD * 2}" height="${ROW_H - 4}" fill="#7c5cbf1f"/>`);
-      parts.push(`<text x="${gutterX + GUTTER - 12}" y="${ry + ROW_H / 2 + 6}" font-family="${ARABIC_FONT}" font-size="18" font-weight="800" fill="${isToday ? "#7c5cbf" : "#2c2540"}" text-anchor="${textAnchor}" direction="${DIR}">${esc(fmtDayName(days[i]).split(" ")[0])}</text>`);
+      parts.push(`<text x="${gutterTextX}" y="${ry + ROW_H / 2 + 6}" font-family="${ARABIC_FONT}" font-size="18" font-weight="800" fill="${isToday ? "#7c5cbf" : "#2c2540"}" text-anchor="${gutterAnchor}" direction="${DIR}">${esc(fmtDayName(days[i]).split(" ")[0])}</text>`);
     }
   }
 
@@ -308,7 +319,7 @@ export async function renderScheduleGridImage(sessions, opts = {}) {
       parts.push(`<rect x="${cx + 3}" y="${cy}" width="${innerW}" height="${subH}" rx="10" fill="${t.soft}"/>`);
       parts.push(`<rect x="${cx + 3.75}" y="${cy + 0.75}" width="${innerW - 1.5}" height="${subH - 1.5}" rx="9.25" fill="none" stroke="${t.ink}" stroke-opacity="0.32" stroke-width="1"/>`);
 
-      const lines = wrapText(cleanTitle(s.title), innerW - 14, 15);
+      const lines = wrapText(nameOf(s), innerW - 14, 15);
       const lineH = 19;
       const textTop = cy + (subH - lines.length * lineH) / 2 + 14;
       lines.forEach((ln, li) => {
