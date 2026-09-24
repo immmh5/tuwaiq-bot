@@ -58,7 +58,25 @@ export async function sendMessage(chatId, text, extra = {}) {
   return data.result;
 }
 
-// Send a PNG buffer as a photo. Used by the image-rendering tools.
+// Rewrite a message already sent, so progress updates replace each other
+// instead of stacking up in the chat. Falls back silently if the edit fails.
+export async function editMessageText(messageId, chatId, text) {
+  if (!token) throw new Error("TELEGRAM_BOT_TOKEN not set");
+  const res = await globalThis.fetch(`${API}/bot${token}/editMessageText`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      chat_id: chatId,
+      message_id: messageId,
+      text,
+      parse_mode: "HTML",
+      disable_web_page_preview: true,
+    }),
+  });
+  const data = await res.json();
+  if (!data.ok) throw new Error(`telegram error: ${JSON.stringify(data).slice(0, 200)}`);
+  return data.result;
+}
 //
 // Why curl and not globalThis.fetch: sendMessage goes through the app's
 // curl-based transport, which is what reaches api.telegram.org from the

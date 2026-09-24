@@ -92,7 +92,11 @@ export function parseScheduleHTML(html) {
 // --- Rendering --------------------------------------------------------------
 
 export async function renderSiteSchedule(parsed, { width = 1080 } = {}) {
-  const { days, classes, axis, weekRange, nowText } = parsed;
+  const { days, axis, weekRange } = parsed;
+  // The student asked for the real table only — cancelled classes are
+  // dropped entirely rather than drawn pale with a strikethrough, so the
+  // image matches the schedule as it actually stands this week.
+  const keep = (parsed.classes || []).filter((c) => !c.cancelled);
   const nCols = Math.max(days.length, 1);
 
   // Geometry mirrors the page: axis gutter, header row, then slot rows.
@@ -102,11 +106,10 @@ export async function renderSiteSchedule(parsed, { width = 1080 } = {}) {
   const gridW = width - PAD * 2 - AXIS_W;
   const colW = gridW / nCols;
 
-  // Row pitch: the site uses 45-min slots at 67.5px; we scale px → our height.
-  const maxTop = classes.reduce((m, c) => Math.max(m, c.top + c.height), 540);
-  const scale = (maxTop > 0 ? 1 : 1) * 1; // keep the page's own pixel space
-  const gridH = Math.ceil(maxTop * scale) + 8;
-  const height = HEAD_H + gridH + (nowText ? 44 : 0) + 96;
+  // Row pitch: the site uses 45-min slots at 67.5px.
+  const maxTop = keep.reduce((m, c) => Math.max(m, c.top + c.height), 540);
+  const gridH = Math.ceil(maxTop) + 8;
+  const height = HEAD_H + gridH + 96;
 
   const parts = [];
   let y0 = 96;
@@ -137,41 +140,23 @@ export async function renderSiteSchedule(parsed, { width = 1080 } = {}) {
   }
 
   // Class cards, in the page's own positions and palette.
-  for (const c of classes) {
+  for (const c of keep) {
     const x = PAD + AXIS_W + c.col * colW + 4;
-    const y = y0 + HEAD_H + c.top * scale;
+    const y = y0 + HEAD_H + c.top;
     const w = colW - 8;
-    const h = c.height * scale;
+    const h = c.height;
     const t = TINT[c.tint] || TINT[0];
-    const opacity = c.cancelled ? 0.52 : 1;
 
-    let card = `<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="11" fill="${t.soft}" opacity="${opacity}"/>`;
+    let card = `<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="11" fill="${t.soft}"/>`;
     // ink @32% inset ring, like the page's box-shadow
-    card += `<rect x="${x + 0.75}" y="${y + 0.75}" width="${w - 1.5}" height="${h - 1.5}" rx="10.25" fill="none" stroke="${t.ink}" stroke-opacity="0.32" stroke-width="1" opacity="${opacity}"/>`;
-    // live classes get the green pulse ring
-    if (c.live) {
-      card += `<rect x="${x + 1}" y="${y + 1}" width="${w - 2}" height="${h - 2}" rx="10" fill="none" stroke="${LIVE_RING}" stroke-width="1.5" opacity="${opacity}"/>`;
-    }
+    card += `<rect x="${x + 0.75}" y="${y + 0.75}" width="${w - 1.5}" height="${h - 1.5}" rx="10.25" fill="none" stroke="${t.ink}" stroke-opacity="0.32" stroke-width="1"/>`;
     parts.push(card);
 
     const subjY = y + Math.min(h * 0.46, 26);
-    parts.push(`<text x="${x + 9}" y="${subjY}" font-family="Noto Sans Arabic, Noto Sans, sans-serif" font-size="16" font-weight="800" fill="#2c2540" direction="rtl" opacity="${opacity}">${esc(c.subj)}</text>`);
-    // cancelled subjects are struck through on the page
-    if (c.cancelled) {
-      const tw = Math.min(w - 18, c.subj.length * 9.5 + 6);
-      parts.push(`<line x1="${x + 9}" y1="${subjY - 4}" x2="${x + 9 + tw}" y2="${subjY - 4}" stroke="#2c2540" stroke-width="1.2" opacity="0.55"/>`);
-    }
+    parts.push(`<text x="${x + 9}" y="${subjY}" font-family="Noto Sans Arabic, Noto Sans, sans-serif" font-size="16" font-weight="800" fill="#2c2540" direction="rtl">${esc(c.subj)}</text>`);
     if (c.meta && h > 34) {
-      parts.push(`<text x="${x + 9}" y="${subjY + 19}" font-family="Noto Sans Arabic, Noto Sans, sans-serif" font-size="13" fill="#2c2540" fill-opacity="0.82" direction="rtl" opacity="${opacity}">${esc(c.meta)}</text>`);
+      parts.push(`<text x="${x + 9}" y="${subjY + 19}" font-family="Noto Sans Arabic, Noto Sans, sans-serif" font-size="13" fill="#2c2540" fill-opacity="0.82" direction="rtl">${esc(c.meta)}</text>`);
     }
-  }
-
-  // Live-class banner, reproducing the page's "جارية الآن" strip.
-  if (nowText) {
-    const by = y0 + HEAD_H + gridH + 14;
-    parts.push(`<rect x="${PAD + AXIS_W}" y="${by}" width="${gridW}" height="34" rx="17" fill="#e2f4ec"/>`);
-    parts.push(`<circle cx="${PAD + AXIS_W + 20}" cy="${by + 17}" r="5" fill="#2e9d78"/>`);
-    parts.push(`<text x="${PAD + AXIS_W + 36}" y="${by + 23}" font-family="Noto Sans Arabic, Noto Sans, sans-serif" font-size="15" font-weight="700" fill="#1f6b52" direction="rtl">جارية الآن: ${esc(nowText)}</text>`);
   }
 
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" direction="rtl">

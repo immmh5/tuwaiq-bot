@@ -2,7 +2,7 @@
 import express from "express";
 import { initStore, getKv, setKv, getCredentials, resetSeen, listSeen, getTokens } from "./store.js";
 import { createWebApp } from "./web.js";
-import { setTelegramToken, on, startPolling, sendMessage, escapeHtml } from "./telegram.js";
+import { setTelegramToken, on, startPolling, sendMessage, escapeHtml, editMessageText } from "./telegram.js";
 import { runCheckOnce, getWatcherState, startWatcher, notifyOwner, fetchScope } from "./watcher.js";
 import { getMyAssignments, getStudentHome, getUnreadCount, getMyAttendance, normalizeAssignments } from "./tuwaiq.js";
 import {
@@ -45,7 +45,21 @@ async function answerWithAI(chatId, question) {
     return;
   }
   const tokens = await getTokens();
-  await sendMessage(chatId, "🤖 ثواني…").catch(() => {});
+  // Stage announcements so the student sees movement while the agent
+  // thinks, fetches and renders — silence is what made it feel hung.
+  const prog = await sendMessage(chatId, "🤖 أفكر…").catch(() => null);
+  let bumped = false;
+  const bump = async (msg) => {
+    if (bumped) return;
+    bumped = true;
+    if (prog && prog.message_id) {
+      await editMessageText(prog.message_id, chatId, msg).catch(() => sendMessage(chatId, msg).catch(() => {}));
+    } else {
+      await sendMessage(chatId, msg).catch(() => {});
+    }
+  };
+  setTimeout(() => bump("⏳ لسه أجمع البيانات…"), 8000).unref?.();
+  setTimeout(() => bump("⏳ شوي وأخلّص…"), 20000).unref?.();
   try {
     const history = recentContext(chatId);
     // Cap the whole agent run: a hung model otherwise leaves the student
@@ -450,6 +464,9 @@ function registerCommands() {
       ["notifications", "🔔 الإشعارات", formatNotification],
     ];
     const parts = [];
+    // Announce each scope as it is fetched, so a slow platform never looks
+    // like the bot froze mid-run.
+    await sendMessage(chatId, "⏳ أجيب كل شي من المنصة…").catch(() => {});
     for (const [scope, label, fmt] of scopes) {
       try {
         const items = await fetchScope(scope, t);
@@ -531,41 +548,37 @@ function registerCommands() {
       return;
     }
     const tokens = await getTokens();
-    await sendMessage(chatId, "📸 بسجّل دخول وأجيب الجدول…").catch(() => {});
+    await sendMessage(chatId, "📸 أجهّز الجدول من المنصة…").catch(() => {});
 
     try {
-      const { establishSession } = await import("./auth.js");
       const { getSchedulePageHTML } = await import("./tuwaiq.js");
       const { parseScheduleHTML, renderSiteSchedule } = await import("./schedule-dom.js");
 
-      const sess = await establishSession(tokens.accessToken);
-      const html = sess.ok
-        ? await getSchedulePageHTML(tokens.accessToken, sess.cookie)
-        : null;
+      await sendMessage(chatId, "🔍 أبحث عن الجدول…").catch(() => {});
+      const html = await getSchedulePageHTML(tokens.accessToken);
 
       if (html && html.includes("tt-wrap")) {
         const parsed = parseScheduleHTML(html);
-        if (parsed.classes.length) {
-          const { png } = await renderSiteSchedule(parsed);
-          await sendPhoto(
-            chatId,
-            png,
-            `📸 جدولك مثل ما يظهر في المنصة — ${parsed.classes.length} حصة` +
-              (parsed.nowText ? `\n<i>جارية الآن: ${esc(parsed.nowText)}</i>` : "")
-          );
+        const live = (parsed.classes || []).filter((c) => !c.cancelled);
+        if (live.length) {
+          await sendMessage(chatId, "🖌 أرسم الجدول الحين…").catch(() => {});
+          const { png } = await renderSiteSchedule({ ...parsed, classes: live });
+          await sendPhoto(chatId, png, `📸 جدولك مثل ما يظهر في المنصة — ${live.length} حصة`);
           return;
         }
       }
-      // No browser session or no grid on the page: fall back to the API grid,
-      // which is the same layout in the site's colours.
-      const items = await fetchScope("schedule", tokens.accessToken);
+      // No grid on the page: fall back to the API grid, which is the same
+      // layout in the site's colours.
+      await sendMessage(chatId, "📊 أجيب الجدول من بياناتك…").catch(() => {});
+      const items = (await fetchScope("schedule", tokens.accessToken)).filter((s) => s.status !== "cancelled");
       if (!Array.isArray(items) || !items.length) {
         await sendMessage(chatId, "ما في بيانات للجدول الحين.");
         return;
       }
       const { renderScheduleGridImage } = await import("./images.js");
+      await sendMessage(chatId, "🖌 أرسم الجدول الحين…").catch(() => {});
       const { png } = await renderScheduleGridImage(items);
-      await sendPhoto(chatId, png, `📸 جدولك — ${items.length} جلسة`);
+      await sendPhoto(chatId, png, `📸 جدولك — ${items.length} حصة`);
     } catch (err) {
       await sendMessage(chatId, `⚠️ ما قدرت أصوّر: <code>${esc(err.message)}</code>`);
     }
@@ -661,10 +674,19 @@ function registerCommands() {
       return;
     }
     const tokens = await getTokens();
+    // Human-readable labels so every step announces itself — the student
+    // should never watch the bot go quiet while it fetches and renders.
+    const STEP = {
+      schedule: "🗓 أجيب جدولك وأرسمه…",
+      grid: "🗓 أبني شبكة الجدول…",
+      assignments: "📚 أجيب واجباتك وأرسمها…",
+      grades: "📊 أجيب درجاتك وأرسمها…",
+    };
     try {
       const { renderScheduleImage, renderAssignmentsImage, renderGradesImage, renderScheduleGridImage } =
         await import("./images.js");
       if (scope === "grid") {
+        await sendMessage(chatId, STEP.grid).catch(() => {});
         const items = await fetchScope("schedule", tokens.accessToken);
         if (!Array.isArray(items) || !items.length) {
           await sendMessage(chatId, "ما في بيانات للجدول الحين.");
@@ -673,11 +695,13 @@ function registerCommands() {
         await sendPhoto(chatId, (await renderScheduleGridImage(items)).png, "🗓 جدولك — نفس تخطيط المنصة");
         return;
       }
+      await sendMessage(chatId, STEP[scope] || "📸 أجهّز صورتك…").catch(() => {});
       const items = await fetchScope(scope, tokens.accessToken);
       if (!Array.isArray(items) || !items.length) {
         await sendMessage(chatId, `ما في بيانات لـ <code>${esc(scope)}</code> الحين.`);
         return;
       }
+      await sendMessage(chatId, "🖌 أرسم الصورة الحين…").catch(() => {});
       const out =
         scope === "schedule"
           ? await renderScheduleImage(items)

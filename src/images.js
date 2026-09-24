@@ -121,7 +121,7 @@ export async function renderScheduleGridImage(sessions) {
     endMin: toMin(s.endTime) || toMin(s.startTime) + 45,
     cancelled: s.status === "cancelled",
   });
-  const all = (sessions || []).map(norm);
+  const all = (sessions || []).filter((s) => s.status !== "cancelled").map(norm);
   const days = [...new Set(all.map((s) => s.day))].sort();
   if (!days.length) days.push(today);
 
@@ -206,35 +206,26 @@ export async function renderScheduleGridImage(sessions) {
     const n = items.length;
     const subW = (CW - 12) / n;
 
-    // Site-faithful card: soft fill, ink-coloured inset ring, and the
-    // cancelled variant at 52% opacity with its title struck through —
-    // the same recipe the platform's own CSS uses for .tt-class.
-    const draw = (s, idx, pale) => {
+    // Site-faithful card: soft fill, ink-coloured inset ring — the same
+    // recipe the platform's own CSS uses for .tt-class.
+    const draw = (s, idx) => {
       const cx = x + 6 + idx * subW;
       const t = colorFor(s);
       const time = fmtClock(s.startTime);
-      const op = pale ? 0.52 : 1;
       const tx = cx + subW / 2;
-      parts.push(`<rect x="${cx}" y="${yTop}" width="${subW - 4}" height="${cardH}" rx="11" fill="${t.soft}" opacity="${op}"/>`);
-      parts.push(`<rect x="${cx + 0.75}" y="${yTop + 0.75}" width="${subW - 5.5}" height="${cardH - 1.5}" rx="10.25" fill="none" stroke="${t.ink}" stroke-opacity="0.32" stroke-width="1" opacity="${op}"/>`);
-      parts.push(`<text x="${tx}" y="${yTop + Math.min(cardH * 0.5, 24)}" font-family="${ARABIC_FONT}" font-size="17" font-weight="800" fill="#2c2540" text-anchor="middle" direction="rtl" opacity="${op}">${esc(s.title)}</text>`);
-      if (pale) {
-        const tw2 = Math.min(subW - 18, s.title.length * 10 + 6);
-        parts.push(`<line x1="${tx - tw2 / 2}" y1="${yTop + Math.min(cardH * 0.5, 24) - 5}" x2="${tx + tw2 / 2}" y2="${yTop + Math.min(cardH * 0.5, 24) - 5}" stroke="#2c2540" stroke-width="1.2" opacity="0.55"/>`);
-      }
+      parts.push(`<rect x="${cx}" y="${yTop}" width="${subW - 4}" height="${cardH}" rx="11" fill="${t.soft}"/>`);
+      parts.push(`<rect x="${cx + 0.75}" y="${yTop + 0.75}" width="${subW - 5.5}" height="${cardH - 1.5}" rx="10.25" fill="none" stroke="${t.ink}" stroke-opacity="0.32" stroke-width="1"/>`);
+      parts.push(`<text x="${tx}" y="${yTop + Math.min(cardH * 0.5, 24)}" font-family="${ARABIC_FONT}" font-size="17" font-weight="800" fill="#2c2540" text-anchor="middle" direction="rtl">${esc(s.title)}</text>`);
       if (cardH > 40 && n === 1) {
         parts.push(
-          `<text x="${cx + 10}" y="${yTop + Math.min(cardH * 0.5, 24) + 19}" font-family="${ARABIC_FONT}" font-size="13" fill="#2c2540" fill-opacity="0.82" direction="rtl" opacity="${op}">${esc(time)}${s.room ? " · " + esc(s.room) : ""}${pale ? " · ملغاة" : ""}</text>`
+          `<text x="${cx + 10}" y="${yTop + Math.min(cardH * 0.5, 24) + 19}" font-family="${ARABIC_FONT}" font-size="13" fill="#2c2540" fill-opacity="0.82" direction="rtl">${esc(time)}${s.room ? " · " + esc(s.room) : ""}</text>`
         );
       }
     };
 
-    // A cancelled class is drawn pale next to its replacement; if the slot
-    // has no live session the cancelled one still shows, on its own.
-    const cancelled = items.filter((s) => s.cancelled);
-    const live = items.filter((s) => !s.cancelled);
-    const order = [...live, ...cancelled];
-    order.forEach((s, i) => draw(s, i, s.cancelled));
+    // Cancelled classes are filtered out before rendering, so every card
+    // here is a real class this week.
+    items.forEach((s, i) => draw(s, i));
   }
 
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" direction="rtl">
