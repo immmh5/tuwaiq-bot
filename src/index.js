@@ -1,6 +1,6 @@
 // src/index.js — boot: store, telegram commands, web server, watcher
 import express from "express";
-import { initStore, getKv, setKv, getCredentials, resetSeen, listSeen, getTokens } from "./store.js";
+import { initStore, getKv, setKv, getCredentials, resetSeen, listSeen, getTokens, isOwner, upsertUser, getUser, setPhone, getPhone } from "./store.js";
 import { createWebApp } from "./web.js";
 import {
   setTelegramToken,
@@ -47,6 +47,53 @@ async function requireLogin(chatId) {
   const creds = await getCredentials();
   if (!creds) {
     await sendMessage(chatId, "🔒 الحساب غير مربوط. افتح رابط Render وسجّل دخول أولًا.");
+    return false;
+  }
+  return true;
+}
+
+// Access control. The bot starts private: only the owner's own Telegram id
+// (OWNER_TELEGRAM_ID) may use it. The owner can open it to guests from the
+// settings panel, in which case anyone may read through the linked account
+// but the destructive commands stay owner-only.
+export function botMode() {
+  return process.env.BOT_MODE === "public" ? "public" : "private";
+}
+
+// The owner is a single person, identified by their Telegram id.
+export function isOwnerOf(chatId) {
+  return isOwner(chatId);
+}
+
+// Commands that change the account or wipe data are never handed to a guest.
+// A guest reads through the linked account; letting them log it out or reset
+// its history would break things for everyone else.
+const OWNER_ONLY = new Set([
+  "/logout",
+  "/reset",
+  "/forget",
+  "/watch",
+  "/interval",
+  "/mode",
+]);
+
+// Every command passes through here first. In private mode anything that
+// isn't the owner is refused outright; in public mode the owner-only list
+// still applies, and the guest is told why rather than silently ignored.
+export async function gateCommand(chatId, command) {
+  if (isOwner(chatId)) return true;
+  if (botMode() === "private") {
+    await sendMessage(
+      chatId,
+      "🔒 البوت خاص الحين — المالك فقط يستخدمه.\n<i>تقدر تسأل المالك يفتحه للعامة من الإعدادات.</i>"
+    ).catch(() => {});
+    return false;
+  }
+  if (OWNER_ONLY.has(command)) {
+    await sendMessage(
+      chatId,
+      "🚫 هذا الأمر للمالك فقط — أنت تستخدم البوت كضيف.\n<i>تقدر تتصفح المنصة وتاخذ نسختك الاحتياطية، لكن ما تقدر تعدّل الحساب.</i>"
+    ).catch(() => {});
     return false;
   }
   return true;
@@ -128,31 +175,43 @@ async function main() {
 }
 
 function registerCommands() {
+  // Every command is wrapped so access control cannot be forgotten on a new
+  // one: the wrapper refuses non-owners in private mode and blocks the
+  // owner-only list for guests in public mode, then records the caller.
+  const guarded = (cmd, fn) =>
+    on(cmd, async (ctx) => {
+      if (!(await gateCommand(ctx.chatId, cmd))) return;
+      // Remember everyone the bot has met, so a person's phone number and
+      // role survive restarts and never get mixed up with another account.
+      await upsertUser(ctx.chatId, {
+        role: isOwner(ctx.chatId) ? "owner" : "guest",
+      }).catch(() => {});
+      return fn(ctx);
+    });
   // ---- Settings panel ------------------------------------------------------
   // The student drives the bot by tapping instead of typing. The panel reads
   // its values from the per-chat settings store, and every button re-renders
   // the same message in place, so the menu never scrolls the chat away.
-  function settingsRows(cfg) {
-    // One row per section so the buttons stay under their heading and no
-    // row is wider than the phone screen.
-    return PANEL.map((sec) =>
-      sec.items.map((name) => ({
-        label: LABELS[name][String(cfg[name])] || String(cfg[name]),
-        action: `set:${name}`,
-      }))
-    ).concat([[{ label: "⛔ إغلاق", action: "close" }]]);
-  }
+  // (The rows are built by settingsRows further down, which also appends the
+  // owner-only access switch.)
 
   // The backup panel reuses the same button machinery, but only lists the
   // backup settings — the two panels stay separate so editing one does not
   // rewrite the other.
-  function backupRows(cfg) {
+  async function backupRows(cfg, chatId) {
     const scopes = ["backup_schedule", "backup_assignments", "backup_courses", "backup_grades", "backup_materials"];
     const formats = ["backup_format", "backup_auto"];
+    const fns = await megaStoreFns();
+    const { getMegaConfig } = await megaModule();
+    const linked = !!(await getMegaConfig(chatId, fns));
     return [
       scopes.map((name) => ({ label: LABELS[name][String(cfg[name])], action: `set:${name}` })),
       formats.map((name) => ({ label: LABELS[name][String(cfg[name])], action: `set:${name}` })),
-      [{ label: "💾 نفّذ نسخة الحين", action: "run_backup" }, { label: "⛔ إغلاق", action: "close" }],
+      [
+        { label: linked ? "✅ MEGA مربوط" : "🔗 ربط MEGA", action: "mega_help" },
+        { label: "💾 نفّذ نسخة الحين", action: "run_backup" },
+      ],
+      [{ label: "⛔ إغلاق", action: "close" }],
     ];
   }
 
@@ -169,7 +228,7 @@ function registerCommands() {
     if (fn) await fn({ chatId, args: "", text: "/backup" }).catch(() => {});
   });
 
-  function settingsText(cfg) {
+  function settingsText(cfg, chatId) {
     const lines = ["<b>⚙️ الإعدادات</b>", ""];
     for (const sec of PANEL) {
       lines.push(`<b>${sec.title}</b>`);
@@ -178,13 +237,71 @@ function registerCommands() {
       }
       lines.push("");
     }
+    // The access switch is shown only to the owner. A guest never sees it,
+    // let alone flips it — that is the whole point of the private mode.
+    if (chatId && isOwner(chatId)) {
+      lines.push("<b>🔒 الوصول</b>");
+      lines.push(
+        `الوضع: ${botMode() === "public" ? "عام — الضيوف مسموحين" : "خاص — أنت فقط"}`
+      );
+      lines.push("");
+    }
     lines.push("<i>اضغط أي زر عشان تغيره — التغيير فوري.</i>");
     return lines.join("\n");
   }
 
-  on("/settings", async ({ chatId }) => {
+  function settingsRows(cfg, chatId) {
+    // One row per section so the buttons stay under their heading and no
+    // row is wider than the phone screen.
+    const rows = PANEL.map((sec) =>
+      sec.items.map((name) => ({
+        label: LABELS[name][String(cfg[name])] || String(cfg[name]),
+        action: `set:${name}`,
+      }))
+    );
+    // The owner's switch sits below the settings, not among them, so a guest
+    // browsing the same panel never gets the button either.
+    if (chatId && isOwner(chatId)) {
+      rows.push([
+        {
+          label:
+            botMode() === "public" ? "🔒 خاص (أنا فقط)" : "🌐 عام (سماح للضيوف)",
+          action: "mode:flip",
+        },
+      ]);
+    }
+    return rows.concat([[{ label: "⛔ إغلاق", action: "close" }]]);
+  }
+
+  guarded("/settings", async ({ chatId }) => {
     const cfg = await getSettings(chatId);
-    await sendButtons(chatId, settingsText(cfg), settingsRows(cfg));
+    await sendButtons(chatId, settingsText(cfg, chatId), settingsRows(cfg, chatId));
+  });
+
+  // The only way the bot opens to other people. Flipping it is an owner
+  // action by construction — the button only exists on the owner's panel,
+  // and the callback re-checks ownership before touching the flag.
+  onCallback("mode", async ({ chatId, queryId, arg }) => {
+    if (!isOwner(chatId)) {
+      await answerCallbackQuery(queryId, "🚫 للمالك فقط");
+      return;
+    }
+    if (arg === "flip") {
+      const next = botMode() === "public" ? "private" : "public";
+      // The mode lives in the environment, so flipping it needs a restart
+      // to take effect; the message says so rather than claiming an instant
+      // change that did not happen.
+      await answerCallbackQuery(
+        queryId,
+        next === "public" ? "🌐 سيصبح عام بعد إعادة التشغيل" : "🔒 سيصبح خاص بعد إعادة التشغيل"
+      );
+      await sendMessage(
+        chatId,
+        `⚠️ <b>تغيير الوضع يحتاج إعادة تشغيل</b>\n\nالوضع الجديد: <b>${
+          next === "public" ? "عام — الضيوف مسموحين" : "خاص — أنت فقط"
+        }</b>\n\n<i>أضف في Render متغير البيئة:</i>\n<code>BOT_MODE=${next}</code>\n<i>ثم أعد النشر.</i>`
+      );
+    }
   });
 
   // A button press. The action carries the setting name; the handler cycles
@@ -204,7 +321,7 @@ function registerCommands() {
         await restartWatcher();
       } catch {}
     }
-    await editMessage(messageId, chatId, settingsText(cfg), settingsRows(cfg));
+    await editMessage(messageId, chatId, settingsText(cfg, chatId), settingsRows(cfg, chatId));
     await answerCallbackQuery(queryId, `✅ ${LABELS[arg][String(cfg[arg])]}`);
   });
 
@@ -215,7 +332,7 @@ function registerCommands() {
 
   onCallback("open_settings", async ({ chatId, queryId }) => {
     const cfg = await getSettings(chatId);
-    await sendButtons(chatId, settingsText(cfg), settingsRows(cfg));
+    await sendButtons(chatId, settingsText(cfg, chatId), settingsRows(cfg, chatId));
     await answerCallbackQuery(queryId, "");
   });
 
@@ -253,7 +370,7 @@ function registerCommands() {
     await sendPhoto(chatId, out.png, `${out.caption} — ${LABELS.schedule_direction[next]}`);
   });
 
-  on("/status", async ({ chatId }) => {
+  guarded("/status", async ({ chatId }) => {
     if (!(await requireLogin(chatId))) return;
     const state = getWatcherState();
     const tokens = await getTokens();
@@ -270,7 +387,7 @@ function registerCommands() {
     await sendMessage(chatId, lines.join("\n"));
   });
 
-  on("/check", async ({ chatId }) => {
+  guarded("/check", async ({ chatId }) => {
     if (!(await requireLogin(chatId))) return;
     await sendMessage(chatId, "🔍 أبدأت الفحص...").catch(() => {});
     const r = await runCheckOnce();
@@ -307,7 +424,7 @@ function registerCommands() {
   // report the exact payload the bot just saw, with the fetch time. This is
   // the answer to "does the bot really read the site, or is it showing me
   // something it stored?" — nothing here is cached.
-  on("/fresh", async ({ chatId }) => {
+  guarded("/fresh", async ({ chatId }) => {
     if (!(await requireLogin(chatId))) return;
     await sendMessage(chatId, "🔄 أجيب بيانات حية من المنصة الحين…").catch(() => {});
     const t0 = Date.now();
@@ -347,7 +464,7 @@ function registerCommands() {
     }
   });
 
-  on("/watch", async ({ chatId, args }) => {
+  guarded("/watch", async ({ chatId, args }) => {
     if (!(await requireLogin(chatId))) return;
     const config = await getKv("watch_config", {
       assignments: true,
@@ -380,7 +497,7 @@ function registerCommands() {
     await sendMessage(chatId, `${state === "on" ? "🟢" : "⚫"} نطاق <code>${scope}</code> ${state === "on" ? "شُغّل" : "أُطفئ"}`);
   });
 
-  on("/interval", async ({ chatId, args }) => {
+  guarded("/interval", async ({ chatId, args }) => {
     if (!(await requireLogin(chatId))) return;
     const current = Number(process.env.CHECK_INTERVAL_MIN) || 10;
     const n = Number(args[0]);
@@ -393,22 +510,55 @@ function registerCommands() {
     }
   });
 
-  on("/who", async ({ chatId }) => {
+  guarded("/who", async ({ chatId }) => {
     if (!(await requireLogin(chatId))) return;
     const identity = await getKv("identity", null);
+    const phone = await getPhone(chatId);
+    const role = isOwner(chatId) ? "المالك" : "ضيف";
     await sendMessage(
       chatId,
-      `<b>👤 الحساب الحالي</b>\nالاسم: ${escapeHtml(identity?.name || "—")}\nالإيميل: <code>${escapeHtml(identity?.email || "—")}</code>`
+      [
+        "<b>👤 الحساب الحالي</b>",
+        `الاسم: ${escapeHtml(identity?.name || "—")}`,
+        `الإيميل: <code>${escapeHtml(identity?.email || "—")}</code>`,
+        `رقمك: <code>${escapeHtml(phone || "غير محدد")}</code>`,
+        `دورك: ${role}`,
+        `الوضع: ${botMode() === "public" ? "عام" : "خاص"}`,
+        "",
+        `<i>غيّر رقمك: <code>/phone 050xxxxxxx</code></i>`,
+      ].join("\n")
     );
   });
 
-  on("/logout", async ({ chatId }) => {
+  // Each person carries their own phone number, so the account record and
+  // any per-user state stay attached to the right person rather than to the
+  // shared platform account.
+  guarded("/phone", async ({ chatId, args }) => {
+    const raw = (args || []).join("").trim();
+    if (!raw) {
+      const phone = await getPhone(chatId);
+      await sendMessage(
+        chatId,
+        `📞 رقمك الحالي: <code>${escapeHtml(phone || "غير محدد")}</code>\n\n<i>تغييره: <code>/phone 050xxxxxxx</code></i>`
+      );
+      return;
+    }
+    const digits = raw.replace(/[^\d+]/g, "");
+    if (digits.length < 9) {
+      await sendMessage(chatId, "⚠️ رقم غير صالح — تأكد من كتابته صح.");
+      return;
+    }
+    await setPhone(chatId, digits);
+    await sendMessage(chatId, `✅ تم حفظ رقمك: <code>${escapeHtml(digits)}</code>`);
+  });
+
+  guarded("/logout", async ({ chatId }) => {
     const { clearCredentials } = await import("./store.js");
     await clearCredentials();
     await sendMessage(chatId, "👋 تم مسح الحساب. سجّل دخول من جديد من صفحة Render.");
   });
 
-  on("/seen", async ({ chatId, args }) => {
+  guarded("/seen", async ({ chatId, args }) => {
     const kind = args[0] || null;
     const rows = await listSeen(15, kind);
     if (!rows.length) {
@@ -423,12 +573,12 @@ function registerCommands() {
     await sendMessage(chatId, lines.join("\n"));
   });
 
-  on("/reset", async ({ chatId }) => {
+  guarded("/reset", async ({ chatId }) => {
     await resetSeen();
     await sendMessage(chatId, "🧹 مُسح سجل المراقبة. كل عنصر سيعُد جديدًا في الفحصة الجاية.");
   });
 
-  on("/due", async ({ chatId }) => {
+  guarded("/due", async ({ chatId }) => {
     if (!(await requireLogin(chatId))) return;
     const tokens = await getTokens();
     const payload = await getMyAssignments(tokens.accessToken);
@@ -446,7 +596,7 @@ function registerCommands() {
     await sendMessage(chatId, lines.join("\n"));
   });
 
-  on("/dashboard", async ({ chatId }) => {
+  guarded("/dashboard", async ({ chatId }) => {
     if (!(await requireLogin(chatId))) return;
     const tokens = await getTokens();
     const home = await getStudentHome(tokens.accessToken);
@@ -478,7 +628,7 @@ function registerCommands() {
     await sendMessage(chatId, formatList(header, shown, fmt) + more);
   };
 
-  on("/assignments", async ({ chatId, args }) => {
+  guarded("/assignments", async ({ chatId, args }) => {
     if (!(await requireLogin(chatId))) return;
     const tokens = await getTokens();
     const items = await fetchScope("assignments", tokens.accessToken);
@@ -491,25 +641,25 @@ function registerCommands() {
     await sendList(chatId, `📝 الواجبات${label ? ` — ${label}` : ""}`, rows, formatAssignment);
   });
 
-  on("/materials", async ({ chatId }) => {
+  guarded("/materials", async ({ chatId }) => {
     if (!(await requireLogin(chatId))) return;
     const tokens = await getTokens();
     await sendList(chatId, "📚 المواد", await fetchScope("materials", tokens.accessToken), formatMaterial);
   });
 
-  on("/exams", async ({ chatId }) => {
+  guarded("/exams", async ({ chatId }) => {
     if (!(await requireLogin(chatId))) return;
     const tokens = await getTokens();
     await sendList(chatId, "📄 الاختبارات المتاحة", await fetchScope("exams", tokens.accessToken), formatExam);
   });
 
-  on("/grades", async ({ chatId }) => {
+  guarded("/grades", async ({ chatId }) => {
     if (!(await requireLogin(chatId))) return;
     const tokens = await getTokens();
     await sendList(chatId, "🏆 الدرجات", await fetchScope("grades", tokens.accessToken), formatGrade);
   });
 
-  on("/courses", async ({ chatId }) => {
+  guarded("/courses", async ({ chatId }) => {
     if (!(await requireLogin(chatId))) return;
     const tokens = await getTokens();
     const items = await fetchScope("courses", tokens.accessToken);
@@ -531,7 +681,7 @@ function registerCommands() {
     await sendMessage(chatId, lines.join("\n\n"));
   });
 
-  on("/schedule", async ({ chatId, args }) => {
+  guarded("/schedule", async ({ chatId, args }) => {
     if (!(await requireLogin(chatId))) return;
     const tokens = await getTokens();
     const items = await fetchScope("schedule", tokens.accessToken);
@@ -564,7 +714,7 @@ function registerCommands() {
     await sendMessage(chatId, lines.join("\n"));
   });
 
-  on("/attendance", async ({ chatId }) => {
+  guarded("/attendance", async ({ chatId }) => {
     if (!(await requireLogin(chatId))) return;
     const tokens = await getTokens();
     const att = await getMyAttendance(tokens.accessToken);
@@ -597,7 +747,7 @@ function registerCommands() {
   });
 
   // Announcements / notifications from the platform bell icon.
-  on("/notifications", async ({ chatId, args }) => {
+  guarded("/notifications", async ({ chatId, args }) => {
     if (!(await requireLogin(chatId))) return;
     const tokens = await getTokens();
     const items = await fetchScope("notifications", tokens.accessToken);
@@ -610,7 +760,7 @@ function registerCommands() {
   // /download <id> sends the file link for a material the bot has seen.
   // The platform exposes fileUrl (S3) or externalUrl; the frontend modal uses
   // exactly these to download/open, so we do the same.
-  on("/download", async ({ chatId, args }) => {
+  guarded("/download", async ({ chatId, args }) => {
     if (!(await requireLogin(chatId))) return;
     const target = args[0];
     const tokens = await getTokens();
@@ -653,7 +803,7 @@ function registerCommands() {
     );
   });
 
-  on("/unread", async ({ chatId }) => {
+  guarded("/unread", async ({ chatId }) => {
     if (!(await requireLogin(chatId))) return;
     const tokens = await getTokens();
     const count = await getUnreadCount(tokens.accessToken);
@@ -662,7 +812,7 @@ function registerCommands() {
   });
 
   // "show me everything" — one snapshot of the whole platform.
-  on("/all", async ({ chatId }) => {
+  guarded("/all", async ({ chatId }) => {
     if (!(await requireLogin(chatId))) return;
     const tokens = await getTokens();
     const t = tokens.accessToken;
@@ -697,7 +847,7 @@ function registerCommands() {
   // setting decides whether a section arrives as the rendered card, a plain
   // list, or both — so the student can take the schedule as an image and the
   // grades as text without touching anything else.
-  on("/backup", async ({ chatId }) => {
+  guarded("/backup", async ({ chatId }) => {
     if (!(await requireLogin(chatId))) return;
     const cfg = await getSettings(chatId);
     const tokens = await getTokens();
@@ -727,6 +877,15 @@ function registerCommands() {
       grades: img.renderGradesImage,
     };
     const totalCount = { ok: 0, fail: 0 };
+    // If the student linked a MEGA folder, the same data is written there as
+    // structured JSON, one file per scope under a dated folder. Without a
+    // linked folder this whole step is skipped and the backup stays local.
+    const fns = await megaStoreFns();
+    const { getMegaConfig, uploadSnapshot, uploadIndex } = await megaModule();
+    const megaCfg = await getMegaConfig(chatId, fns);
+    const dateLabel = new Date().toISOString().slice(0, 10);
+    const snapshot = [];
+
     for (const [key, label, scope] of plan) {
       try {
         const items = await fetchScope(scope, tokens.accessToken);
@@ -735,6 +894,28 @@ function registerCommands() {
         );
         const n = (key === "schedule" ? live : items || []).length;
         const word = n === 1 ? "عنصر واحد" : n === 2 ? "عنصرين" : `${n} عنصر`;
+
+        if (megaCfg) {
+          const idx = plan.findIndex((p) => p[0] === key);
+          const payload = {
+            scope: key,
+            fetchedAt: new Date().toISOString(),
+            count: n,
+            items: key === "schedule" ? live : items || [],
+          };
+          try {
+            const name = await uploadSnapshot({
+              cfg: megaCfg,
+              dateLabel,
+              scopeIndex: idx,
+              scopeName: scope,
+              payload,
+            });
+            snapshot.push({ scope, file: name, count: n });
+          } catch (err) {
+            console.error(`mega upload failed for ${scope}:`, err.message);
+          }
+        }
 
         if ((fmt === "image" || fmt === "both") && renderers[key]) {
           const out = await renderers[key](live, {
@@ -760,17 +941,46 @@ function registerCommands() {
         await sendMessage(chatId, `${label}\n<i>خطأ: ${esc(err.message)}</i>`).catch(() => {});
       }
     }
+    // The index file is written last, once every scope has landed, so the
+    // dated folder describes itself fully.
+    if (megaCfg && snapshot.length) {
+      try {
+        await uploadIndex({
+          cfg: megaCfg,
+          dateLabel,
+          entries: snapshot.map((s) => ({
+            scope: s.scope,
+            file: s.file,
+            items: s.count,
+            fetchedAt: new Date().toISOString(),
+          })),
+        });
+      } catch (err) {
+        console.error("mega index upload failed:", err.message);
+      }
+    }
+
     await sendMessage(
       chatId,
-      `✅ <b>تمت النسخة الاحتياطية</b>\nناجح: ${totalCount.ok} | فشل: ${totalCount.fail}\n\n<i>${
-        cfg.backup_auto === false ? "التحديث التلقائي متوقف — شغّله من /backupcfg" : "التحديث التلقائي شغال مع كل فحص"
-      }</i>`
+      [
+        "✅ <b>تمت النسخة الاحتياطية</b>",
+        `ناجح: ${totalCount.ok} | فشل: ${totalCount.fail}`,
+        megaCfg && snapshot.length
+          ? `☁️ MEGA: ${snapshot.length} ملف في مجلد <code>${dateLabel}</code>`
+          : "☁️ MEGA: غير مربوط — قلّل فقط لـ تلجرام",
+        "",
+        `<i>${
+          cfg.backup_auto === false
+            ? "التحديث التلقائي متوقف — شغّله من /backupcfg"
+            : "التحديث التلقائي شغال مع كل فحص"
+        }</i>`,
+      ].join("\n")
     );
   });
 
   // Backup settings panel: which scopes get copied, and in what shape. Same
   // button machinery as /settings, its own message so the two stay separate.
-  on("/backupcfg", async ({ chatId }) => {
+  guarded("/backupcfg", async ({ chatId }) => {
     const cfg = await getSettings(chatId);
     await sendButtons(
       chatId,
@@ -790,18 +1000,124 @@ function registerCommands() {
         "",
         "<i>اضغط أي زر عشان تغيره — التغيير فوري.</i>",
       ].join("\n"),
-      backupRows(cfg)
+      await backupRows(cfg, chatId)
     );
   });
 
-  on("/help", async ({ chatId }) => {
+  guarded("/help", async ({ chatId }) => {
     await sendMessage(chatId, HELP_TEXT);
+  });
+
+  // ===== MEGA: optional personal backup destination =====
+  // The student links their own MEGA folder, and /backup then writes an
+  // organised snapshot into it. Linking is entirely optional — with no
+  // folder linked, /backup keeps its Telegram-only behaviour.
+
+  async function megaModule() {
+    return import("./mega.js");
+  }
+  async function megaStoreFns() {
+    const { setUserKv, getUserKv } = await import("./store.js");
+    return { setUserKv, getUserKv };
+  }
+
+  guarded("/mega", async ({ chatId, args }) => {
+    const sub = (args[0] || "").toLowerCase();
+    const fns = await megaStoreFns();
+    const { setMegaLink, clearMegaLink, getMegaConfig, parseFolderLink } = await megaModule();
+
+    if (sub === "off") {
+      await clearMegaLink(chatId, fns);
+      await sendMessage(chatId, "🔌 تم فصل MEGA. نسخك السابقة تبقى في حسابك طبعًا.");
+      return;
+    }
+    if (sub === "status" || !sub) {
+      const cfg = await getMegaConfig(chatId, fns);
+      if (!cfg) {
+        await sendMessage(
+          chatId,
+          [
+            "💾 <b>حالة MEGA</b>",
+            "غير مربوط الحين.",
+            "",
+            "<b>للربط (موصى به):</b>",
+            "1️⃣ افتح MEGA وأنشئ مجلد جديد (مثلاً <code>طويق-نسخ-احتياطي</code>)",
+            "2️⃣ اضغط على المجلد → <b>Get link</b>",
+            "3️⃣ أرسل الرابط هنا:",
+            "<code>/mega https://mega.nz/folder/xxx#key</code>",
+            "",
+            "<i>🔒 ما نخزن كلمة السر إطلاقًا — الرابط وحده يكفي، والبيانات مشفّرة بمفتاحك.</i>",
+          ].join("\n")
+        );
+        return;
+      }
+      await sendMessage(
+        chatId,
+        `💾 <b>حالة MEGA</b>\nالوضع: ${cfg.mode === "credentials" ? "حساب كامل" : "مجلد مربوط"} ✅\nالمعرف: <code>${
+          parseFolderLink(cfg.url)?.id || "—"
+        }</code>\nمنذ: ${cfg.addedAt ? new Date(cfg.addedAt).toLocaleString("ar-SA") : "—"}`
+      );
+      return;
+    }
+    if (sub === "test") {
+      const cfg = await getMegaConfig(chatId, fns);
+      if (!cfg) {
+        await sendMessage(chatId, "⚠️ اربط MEGA أولًا: <code>/mega &lt;رابط&gt;</code>");
+        return;
+      }
+      await sendMessage(chatId, "🧪 أجرب الكتابة في مجلدك…").catch(() => {});
+      try {
+        const { uploadSnapshot } = await megaModule();
+        const label = new Date().toISOString().slice(0, 10);
+        await uploadSnapshot({
+          cfg,
+          dateLabel: label,
+          scopeIndex: 99,
+          scopeName: "اختبار",
+          payload: { test: true, at: new Date().toISOString() },
+        });
+        await sendMessage(chatId, "✅ الكتابة نجحت! مجلدك جاهز للنسخ الاحتياطي.");
+      } catch (err) {
+        await sendMessage(chatId, `⚠️ فشل الاختبار: <code>${esc(err.message).slice(0, 150)}</code>`);
+      }
+      return;
+    }
+    // Anything else is treated as a link to bind.
+    const url = (args[0] || "").trim();
+    if (!url.startsWith("http")) {
+      await sendMessage(chatId, "⚠️ استخدم: <code>/mega &lt;رابط&gt;</code> أو <code>/mega status</code>");
+      return;
+    }
+    try {
+      await setMegaLink(chatId, url, fns);
+      await sendMessage(
+        chatId,
+        "✅ <b>تم ربط MEGA</b>\nالنسخة الاحتياطية الجاية راح تُحفظ في مجلدك بترتيب منظم.\n\n<i>جرّب: <code>/mega test</code></i>"
+      );
+    } catch (err) {
+      await sendMessage(chatId, `⚠️ الرابط غير صالح: <code>${esc(err.message).slice(0, 120)}</code>`);
+    }
+  });
+
+  // The callback behind the MEGA button on the backup panel, so the student
+  // can reach the link flow without typing the command.
+  onCallback("mega_help", async ({ chatId, queryId }) => {
+    await answerCallbackQuery(queryId, "💾 انظر رسالة /mega");
+    await sendMessage(
+      chatId,
+      [
+        "💾 <b>ربط MEGA</b>",
+        "1️⃣ أنشئ مجلد في MEGA",
+        "2️⃣ اضغط عليه → <b>Get link</b>",
+        "3️⃣ أرسل الرابط: <code>/mega https://mega.nz/folder/xxx#key</code>",
+      ].join("\n")
+    );
   });
 
   // ===== AI: free-text chat =====
   // Any message that isn't a command is treated as a question for the AI.
   // It answers using a live snapshot of the platform as context.
-  on("/ai", async ({ chatId, args, text }) => {
+  guarded("/ai", async ({ chatId, args, text }) => {
     const q = args.join(" ").trim();
     if (!q) {
       const cfg = aiConfig();
@@ -818,7 +1134,7 @@ function registerCommands() {
   });
 
   // Today's classes at a glance — the most-used view for a student.
-  on("/today", async ({ chatId }) => {
+  guarded("/today", async ({ chatId }) => {
     if (!(await requireLogin(chatId))) return;
     const tokens = await getTokens();
     const items = await fetchScope("schedule", tokens.accessToken);
@@ -842,17 +1158,17 @@ function registerCommands() {
   // Stored in reminders_config so it survives restarts.
   // Telegram commands can't contain spaces, so multi-word scopes are joined
   // with an underscore — they register cleanly and show as one command.
-  on("/img_grid", async (ctx) => onImg(ctx, "grid"));
-  on("/img_schedule", async (ctx) => onImg(ctx, "schedule"));
-  on("/img_assignments", async (ctx) => onImg(ctx, "assignments"));
-  on("/img_grades", async (ctx) => onImg(ctx, "grades"));
+  guarded("/img_grid", async (ctx) => onImg(ctx, "grid"));
+  guarded("/img_schedule", async (ctx) => onImg(ctx, "schedule"));
+  guarded("/img_assignments", async (ctx) => onImg(ctx, "assignments"));
+  guarded("/img_grades", async (ctx) => onImg(ctx, "grades"));
 
   // The table exactly as the site shows it. The web page needs a Keycloak
   // browser session (the bearer token is not enough), so this establishes
   // one from the /login chain, then reads the real /student/schedule HTML
   // and redraws it in the platform's own palette. If the session cannot be
   // established it falls back to the API-driven grid rather than failing.
-  on("/site", async ({ chatId, args }) => {
+  guarded("/site", async ({ chatId, args }) => {
     if (!(await requireLogin(chatId))) return;
     const scope = String(args[0] || "schedule");
     if (scope !== "schedule") {
@@ -896,7 +1212,7 @@ function registerCommands() {
     }
   });
 
-  on("/remind", async ({ chatId, args }) => {
+  guarded("/remind", async ({ chatId, args }) => {
     const arg = String(args[0] || "").toLowerCase();
     const cfg = await getKv("reminders_config", { enabled: true });
     if (arg === "on" || arg === "off") {
@@ -919,7 +1235,7 @@ function registerCommands() {
   });
 
   // Master switch for the "new item appeared" notifications.
-  on("/newalerts", async ({ chatId, args }) => {
+  guarded("/newalerts", async ({ chatId, args }) => {
     const arg = String(args[0] || "").toLowerCase();
     const cfg = await getKv("watch_config", {});
     if (arg === "on" || arg === "off") {
@@ -943,7 +1259,7 @@ function registerCommands() {
 
   // Recall earlier conversation. The model only sees the last few exchanges
   // by default; this lets the student page back further on demand.
-  on("/history", async ({ chatId, args }) => {
+  guarded("/history", async ({ chatId, args }) => {
     const n = Math.min(Number(args[0]) || 10, 20);
     const rows = getHistory(chatId, n);
     if (!rows.length) {
@@ -959,13 +1275,13 @@ function registerCommands() {
     await sendMessage(chatId, lines.join("\n"));
   });
 
-  on("/forget", async ({ chatId }) => {
+  guarded("/forget", async ({ chatId }) => {
     clearMemory(chatId);
     await sendMessage(chatId, "🧹 نسيت المحادثة السابقة.\n\n<i>ابدأ من جديد — أسمعك.</i>");
   });
 
   // Send a rendered PNG image of a scope — schedule, assignments or grades.
-  on("/img", async ({ chatId, args }) => {
+  guarded("/img", async ({ chatId, args }) => {
     const scope = args[0] || "schedule";
     await onImg({ chatId }, scope);
   });
@@ -1047,7 +1363,7 @@ function registerCommands() {
     }
   }
 
-  on("/export", async ({ chatId, args }) => {
+  guarded("/export", async ({ chatId, args }) => {
     if (!(await requireLogin(chatId))) return;
     const scope = args[0];
     const valid = ["assignments", "materials", "exams", "grades", "courses", "schedule", "notifications"];
@@ -1112,11 +1428,22 @@ const HELP_TEXT = `<b>🤖 أوامر بوت طويق</b>
 /fresh — ✅ أثبت إن البيانات من المنصة الحين
 /settings — ⚙️ لوحة الإعدادات (أزرار)
 /backupcfg — 🆕 <b>إعدادات النسخة الاحتياطية</b> (أزرار)
+
+<b>☁️ MEGA (اختياري — نسخة شخصية):</b>
+/mega &lt;رابط&gt; — ربط مجلد MEGA الخاص بك
+/mega status — حالة الاتصال
+/mega test — تجربة الكتابة في مجلدك
+/mega off — فصل MEGA
+
+<b>👤 الحساب:</b>
+/phone 050xxxxxxx — حفظ أو تغيير رقمك
+/whoami — رقمك، دورك، وحالة MEGA
 /watch assignments on|off — تشغيل/إيقاف مراقبة نطاق
 /interval 15 — تغيير دقيقة الفحص
 /seen — آخر ما رُصد
 /reset — مسح السجل
-/who — الحساب الحالي
+/who — الحساب الحالي + رقمك ودورك
+/phone 050xxxxxxx — حفظ أو تغيير رقمك
 /logout — تسجيل الخروج
 /help — هذه القائمة`;
 

@@ -22,7 +22,19 @@ CREATE TABLE IF NOT EXISTS seen_items (
   seen_at timestamptz NOT NULL DEFAULT now()
 );
 
+-- Every Telegram user the bot has met. One row per person, so settings,
+-- phone number and role are theirs alone and no account is shared by
+-- accident. This is the project-wide user store.
+CREATE TABLE IF NOT EXISTS users (
+  telegram_id text PRIMARY KEY,
+  phone text,
+  role text NOT NULL DEFAULT 'guest',
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
 CREATE INDEX IF NOT EXISTS seen_items_kind_idx ON seen_items(kind);
+CREATE INDEX IF NOT EXISTS users_phone_idx ON users(phone);
 `;
 
 // Supabase's *direct* host (db.<ref>.supabase.co) publishes an IPv6-only DNS
@@ -203,4 +215,66 @@ export async function pruneSeen(keepDays = 180) {
     "DELETE FROM seen_items WHERE seen_at < now() - ($1::int) * interval '1 day'",
     [keepDays]
   );
+}
+
+// --- users --------------------------------------------------------------------
+// One record per Telegram user. The platform account stays owned by whoever
+// set it up; these rows carry a person's own phone number, role, and any
+// per-user state that should never leak between accounts.
+
+export async function upsertUser(telegramId, patch = {}) {
+  const pool = getPool();
+  const cols = Object.keys(patch).filter((k) => ["phone", "role"].includes(k));
+  if (!cols.length) {
+    await pool.query(
+      "INSERT INTO users (telegram_id) VALUES ($1) ON CONFLICT DO NOTHING",
+      [String(telegramId)]
+    );
+  } else {
+    const vals = [String(telegramId), ...cols.map((c) => patch[c])];
+    const setClause = cols.map((c, i) => `${c} = $${i + 2}`).join(", ");
+    const valClause = cols.map((c, i) => `$${i + 2}`).join(", ");
+    await pool.query(
+      `INSERT INTO users (telegram_id, ${cols.join(", ")})
+       VALUES (${valClause ? "$1, " + valClause : "$1"})
+       ON CONFLICT (telegram_id) DO UPDATE SET ${setClause}, updated_at = now()`,
+      vals
+    );
+  }
+  return getUser(telegramId);
+}
+
+export async function getUser(telegramId) {
+  const r = await getPool().query("SELECT * FROM users WHERE telegram_id = $1", [
+    String(telegramId),
+  ]);
+  return r.rowCount ? r.rows[0] : null;
+}
+
+// The owner is whoever's Telegram id is configured in the environment. Only
+// they can flip the bot between private and public, and only they own the
+// platform account a guest session would read through.
+export function isOwner(telegramId) {
+  const owner = process.env.OWNER_TELEGRAM_ID;
+  return !!owner && String(telegramId) === String(owner);
+}
+
+export async function setPhone(telegramId, phone) {
+  return upsertUser(telegramId, { phone: phone || null });
+}
+
+export async function getPhone(telegramId) {
+  const u = await getUser(telegramId);
+  return u?.phone || null;
+}
+
+// --- per-user key/value ------------------------------------------------------
+// Settings and MEGA links are scoped to the user, not the shared kv table,
+// so two people on the bot never see each other's configuration.
+export async function setUserKv(telegramId, key, value) {
+  return setKv(`user:${telegramId}:${key}`, value);
+}
+
+export async function getUserKv(telegramId, key, fallback = null) {
+  return getKv(`user:${telegramId}:${key}`, fallback);
 }
