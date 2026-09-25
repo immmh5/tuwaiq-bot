@@ -56,6 +56,10 @@ export function createWebApp() {
         status: creds ? "ok" : "no_account",
         loggedIn: !!creds,
         tokenValid: !!(tokens?.accessToken && tokens.accessExpiresAt > Date.now() / 1000),
+        // The access mode is only as strong as its env var; surfacing it
+        // here makes a misconfiguration visible from the health check.
+        botMode: process.env.BOT_MODE === "public" ? "public" : "private",
+        ownerSet: !!process.env.OWNER_TELEGRAM_ID,
         watcher: state,
         time: new Date().toISOString(),
       });
