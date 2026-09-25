@@ -1,6 +1,6 @@
 // src/index.js — boot: store, telegram commands, web server, watcher
 import express from "express";
-import { initStore, getKv, setKv, getCredentials, resetSeen, listSeen, getTokens, isOwner, upsertUser, getUser, setPhone, getPhone } from "./store.js";
+import { initStore, getKv, setKv, getCredentials, resetSeen, listSeen, getTokens, isOwner, isOwnerOf as isOwnerOfStore, upsertUser, getUser, setPhone, getPhone, isOwnerPhone } from "./store.js";
 import { createWebApp } from "./web.js";
 import {
   setTelegramToken,
@@ -13,6 +13,8 @@ import {
   editMessage,
   answerCallbackQuery,
   onCallback,
+  requestContact,
+  hideKeyboard,
 } from "./telegram.js";
 import {
   getSettings,
@@ -60,9 +62,11 @@ export function botMode() {
   return process.env.BOT_MODE === "public" ? "public" : "private";
 }
 
-// The owner is a single person, identified by their Telegram id.
-export function isOwnerOf(chatId) {
-  return isOwner(chatId);
+// The owner is recognised by the phone number they shared with the bot,
+// falling back to the configured chat id. The number is the primary signal:
+// it comes from Telegram itself.
+export async function isOwnerOf(chatId) {
+  return isOwnerOfStore(chatId);
 }
 
 // Commands that change the account or wipe data are never handed to a guest.
@@ -81,7 +85,9 @@ const OWNER_ONLY = new Set([
 // isn't the owner is refused outright; in public mode the owner-only list
 // still applies, and the guest is told why rather than silently ignored.
 export async function gateCommand(chatId, command) {
-  if (isOwner(chatId)) return true;
+  // The owner is recognised by the phone number they shared with the bot,
+  // or by the configured chat id. Either signal grants full access.
+  if (await isOwnerOfStore(chatId)) return true;
   if (botMode() === "private") {
     await sendMessage(
       chatId,
@@ -183,8 +189,11 @@ function registerCommands() {
       if (!(await gateCommand(ctx.chatId, cmd))) return;
       // Remember everyone the bot has met, so a person's phone number and
       // role survive restarts and never get mixed up with another account.
+      // The role is resolved from the phone number they shared with the
+      // bot, falling back to the configured chat id.
+      const owner = await isOwnerOfStore(ctx.chatId).catch(() => false);
       await upsertUser(ctx.chatId, {
-        role: isOwner(ctx.chatId) ? "owner" : "guest",
+        role: owner ? "owner" : "guest",
       }).catch(() => {});
       return fn(ctx);
     });
@@ -228,7 +237,7 @@ function registerCommands() {
     if (fn) await fn({ chatId, args: "", text: "/backup" }).catch(() => {});
   });
 
-  function settingsText(cfg, chatId) {
+  async function settingsText(cfg, chatId) {
     const lines = ["<b>⚙️ الإعدادات</b>", ""];
     for (const sec of PANEL) {
       lines.push(`<b>${sec.title}</b>`);
@@ -239,7 +248,7 @@ function registerCommands() {
     }
     // The access switch is shown only to the owner. A guest never sees it,
     // let alone flips it — that is the whole point of the private mode.
-    if (chatId && isOwner(chatId)) {
+    if (chatId && (await isOwnerOfStore(chatId))) {
       lines.push("<b>🔒 الوصول</b>");
       lines.push(
         `الوضع: ${botMode() === "public" ? "عام — الضيوف مسموحين" : "خاص — أنت فقط"}`
@@ -250,7 +259,7 @@ function registerCommands() {
     return lines.join("\n");
   }
 
-  function settingsRows(cfg, chatId) {
+  async function settingsRows(cfg, chatId) {
     // One row per section so the buttons stay under their heading and no
     // row is wider than the phone screen.
     const rows = PANEL.map((sec) =>
@@ -261,7 +270,7 @@ function registerCommands() {
     );
     // The owner's switch sits below the settings, not among them, so a guest
     // browsing the same panel never gets the button either.
-    if (chatId && isOwner(chatId)) {
+    if (chatId && (await isOwnerOfStore(chatId))) {
       rows.push([
         {
           label:
@@ -275,14 +284,14 @@ function registerCommands() {
 
   guarded("/settings", async ({ chatId }) => {
     const cfg = await getSettings(chatId);
-    await sendButtons(chatId, settingsText(cfg, chatId), settingsRows(cfg, chatId));
+    await sendButtons(chatId, (await settingsText(cfg, chatId)), (await settingsRows(cfg, chatId)));
   });
 
   // The only way the bot opens to other people. Flipping it is an owner
   // action by construction — the button only exists on the owner's panel,
   // and the callback re-checks ownership before touching the flag.
   onCallback("mode", async ({ chatId, queryId, arg }) => {
-    if (!isOwner(chatId)) {
+    if (!(await isOwnerOfStore(chatId))) {
       await answerCallbackQuery(queryId, "🚫 للمالك فقط");
       return;
     }
@@ -321,7 +330,7 @@ function registerCommands() {
         await restartWatcher();
       } catch {}
     }
-    await editMessage(messageId, chatId, settingsText(cfg, chatId), settingsRows(cfg, chatId));
+    await editMessage(messageId, chatId, (await settingsText(cfg, chatId)), (await settingsRows(cfg, chatId)));
     await answerCallbackQuery(queryId, `✅ ${LABELS[arg][String(cfg[arg])]}`);
   });
 
@@ -332,7 +341,7 @@ function registerCommands() {
 
   onCallback("open_settings", async ({ chatId, queryId }) => {
     const cfg = await getSettings(chatId);
-    await sendButtons(chatId, settingsText(cfg, chatId), settingsRows(cfg, chatId));
+    await sendButtons(chatId, (await settingsText(cfg, chatId)), (await settingsRows(cfg, chatId)));
     await answerCallbackQuery(queryId, "");
   });
 
@@ -514,7 +523,8 @@ function registerCommands() {
     if (!(await requireLogin(chatId))) return;
     const identity = await getKv("identity", null);
     const phone = await getPhone(chatId);
-    const role = isOwner(chatId) ? "المالك" : "ضيف";
+    const owner = await isOwnerOfStore(chatId);
+    const role = owner ? "المالك" : "ضيف";
     await sendMessage(
       chatId,
       [
@@ -525,7 +535,8 @@ function registerCommands() {
         `دورك: ${role}`,
         `الوضع: ${botMode() === "public" ? "عام" : "خاص"}`,
         "",
-        `<i>غيّر رقمك: <code>/phone 050xxxxxxx</code></i>`,
+        `<i>عرف البوت بنفسك بضغطة: <code>/identify</code></i>`,
+        `<i>أو يدويًا: <code>/phone 050xxxxxxx</code></i>`,
       ].join("\n")
     );
   });
@@ -550,6 +561,45 @@ function registerCommands() {
     }
     await setPhone(chatId, digits);
     await sendMessage(chatId, `✅ تم حفظ رقمك: <code>${escapeHtml(digits)}</code>`);
+  });
+
+  // A contact shared through Telegram's button arrives here. The number came
+  // from Telegram itself, so it is the bot's real identification of who it is
+  // talking to — no typing, no dashboard, no chat id to copy anywhere.
+  on("/contact", async ({ chatId, args, raw }) => {
+    const digits = (args[0] || "").replace(/[^\d]/g, "");
+    if (!digits) return;
+    await hideKeyboard(chatId, `✅ وصل رقمك: <code>${escapeHtml(digits)}</code>`);
+    const owner = await isOwnerOfStore(chatId);
+    await upsertUser(chatId, {
+      role: owner ? "owner" : "guest",
+    }).catch(() => {});
+    await sendMessage(
+      chatId,
+      [
+        `✅ <b>عرفتك — رقمك: <code>${escapeHtml(digits)}</code></b>`,
+        `دورك: <b>${owner ? "المالك" : "ضيف"}</b>`,
+        "",
+        owner
+          ? "<i>أنت تتحكم بالبوت بالكامل — كل الأوامر والأزرار متاحة لك.</i>"
+          : "<i>تستخدم البوت كضيف — تقدر تتصفح وتاخذ نسختك، لكن ما تعدّل الحساب.</i>",
+      ].join("\n")
+    );
+  });
+
+  // Ask for the number the easy way: one tap on Telegram's own contact
+  // sheet, which is what @ppua-style bots use to read a caller's number.
+  guarded("/identify", async ({ chatId }) => {
+    await requestContact(
+      chatId,
+      [
+        "📞 <b>عرف البوت مين معاه</b>",
+        "",
+        "اضغط الزر تحت — يرسل رقمك من تلجرام نفسه (ما تكتب شي).",
+        "",
+        "<i>الرقم يُستخدم لمعرفة دورك: مالك ولا ضيف.</i>",
+      ].join("\n")
+    );
   });
 
   guarded("/logout", async ({ chatId }) => {
@@ -1436,14 +1486,16 @@ const HELP_TEXT = `<b>🤖 أوامر بوت طويق</b>
 /mega off — فصل MEGA
 
 <b>👤 الحساب:</b>
+/identify — 🆕 <b>عرّف البوت بنفسك</b> (زر مشاركة الرقم)
 /phone 050xxxxxxx — حفظ أو تغيير رقمك
-/whoami — رقمك، دورك، وحالة MEGA
+/who — رقمك، دورك، وحالة MEGA
 /watch assignments on|off — تشغيل/إيقاف مراقبة نطاق
 /interval 15 — تغيير دقيقة الفحص
 /seen — آخر ما رُصد
 /reset — مسح السجل
 /who — الحساب الحالي + رقمك ودورك
-/phone 050xxxxxxx — حفظ أو تغيير رقمك
+/identify — 🆕 <b>عرّف البوت بنفسك</b> (زر مشاركة الرقم من تلجرام)
+/phone 050xxxxxxx — حفظ أو تغيير رقمك يدويًا
 /logout — تسجيل الخروج
 /help — هذه القائمة`;
 

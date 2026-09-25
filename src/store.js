@@ -251,12 +251,34 @@ export async function getUser(telegramId) {
   return r.rowCount ? r.rows[0] : null;
 }
 
-// The owner is whoever's Telegram id is configured in the environment. Only
-// they can flip the bot between private and public, and only they own the
-// platform account a guest session would read through.
+// The owner is recognised by either signal: the configured chat id, or the
+// phone number the person shared with the bot. The phone is the primary
+// check — it comes from Telegram itself, not from a chat id pasted out of a
+// dashboard.
 export function isOwner(telegramId) {
   const owner = process.env.OWNER_TELEGRAM_ID;
   return !!owner && String(telegramId) === String(owner);
+}
+
+export function isOwnerPhone(phone) {
+  const owner = process.env.OWNER_PHONE;
+  if (!owner) return false;
+  const a = String(phone || "").replace(/[^\d]/g, "");
+  const b = String(owner).replace(/[^\d]/g, "");
+  if (!a || !b) return false;
+  // Compare the trailing digits: a shared contact arrives with the country
+  // code (966…) while the config may or may not carry it, and either form
+  // should match.
+  const tail = (s, n) => s.slice(-n);
+  return a === b || tail(a, 9) === tail(b, 9) || tail(a, 10) === tail(b, 10);
+}
+
+// The async owner check used by the command gate: chat id first (cheap),
+// then the number this person has on file.
+export async function isOwnerOf(chatId) {
+  if (isOwner(chatId)) return true;
+  const stored = await getPhone(chatId);
+  return !!(stored && isOwnerPhone(stored));
 }
 
 export async function setPhone(telegramId, phone) {

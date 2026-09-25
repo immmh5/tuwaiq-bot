@@ -207,9 +207,8 @@ async function getUpdates(offsetValue, timeout) {
 
 function handleMessage(update) {
   const msg = update.message;
-  if (!msg || !msg.text) return;
+  if (!msg) return;
 
-  const text = msg.text.trim();
   const chatId = msg.chat.id;
 
   // Remember the last chat that messaged the bot so the owner can look it up
@@ -217,6 +216,29 @@ function handleMessage(update) {
   import("./store.js")
     .then(({ setKv }) => setKv("last_chat_id", String(chatId)))
     .catch(() => {});
+
+  // A shared contact arrives as its own message type, not as text. Telegram
+  // only hands over a phone number when the person taps the button, so this
+  // is the bot learning the number from Telegram itself rather than being
+  // told it. The number is normalised to digits so it compares reliably
+  // against the configured owner number.
+  if (msg.contact) {
+    const raw = String(msg.contact.phone_number || "");
+    const digits = raw.replace(/[^\d]/g, "");
+    import("./store.js")
+      .then(({ setPhone, upsertUser }) =>
+        Promise.all([setPhone(chatId, digits), upsertUser(chatId)]),
+      )
+      .then(() => {
+        const fn = handlers.get("/contact");
+        if (fn) fn({ chatId, args: [digits], text: "", raw: msg });
+      })
+      .catch(() => {});
+    return;
+  }
+
+  if (!msg.text) return;
+  const text = msg.text.trim();
 
   // Only the owner chat is allowed to control the bot.
   const allowed = process.env.TELEGRAM_CHAT_ID
@@ -294,8 +316,7 @@ export async function sendButtons(chatId, text, rows, extra = {}) {
         callback_data: String(b.action).slice(0, 64),
       }))
     ),
-  };
-  const body = {
+  };  const body = {
     chat_id: chatId,
     text,
     parse_mode: "HTML",
@@ -307,6 +328,58 @@ export async function sendButtons(chatId, text, rows, extra = {}) {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
+  });
+  const data = await res.json();
+  if (!data.ok) throw new Error(`telegram error: ${JSON.stringify(data).slice(0, 200)}`);
+  return data.result;
+}
+
+// Ask the person to share their own phone number. Telegram only reveals a
+// number this way — a bot cannot read it from a chat — and the button
+// surfaces a one-tap system sheet rather than asking them to type digits.
+// This is how the bot learns who it is talking to.
+export async function requestContact(chatId, text) {
+  if (!token) throw new Error("TELEGRAM_BOT_TOKEN not set");
+  const body = {
+    chat_id: chatId,
+    text,
+    parse_mode: "HTML",
+    reply_markup: {
+      keyboard: [
+        [
+          {
+            text: "📞 مشاركة رقمي",
+            request_contact: true,
+          },
+        ],
+      ],
+      resize_keyboard: true,
+      one_time_keyboard: true,
+    },
+  };
+  const res = await globalThis.fetch(`${API}/bot${token}/sendMessage`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json();
+  if (!data.ok) throw new Error(`telegram error: ${JSON.stringify(data).slice(0, 200)}`);
+  return data.result;
+}
+
+// Clear the contact keyboard once the number is in, so the button does not
+// linger on screen after it has served its purpose.
+export async function hideKeyboard(chatId, text = "✅ تم") {
+  if (!token) throw new Error("TELEGRAM_BOT_TOKEN not set");
+  const res = await globalThis.fetch(`${API}/bot${token}/sendMessage`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      chat_id: chatId,
+      text,
+      parse_mode: "HTML",
+      reply_markup: { remove_keyboard: true },
+    }),
   });
   const data = await res.json();
   if (!data.ok) throw new Error(`telegram error: ${JSON.stringify(data).slice(0, 200)}`);
