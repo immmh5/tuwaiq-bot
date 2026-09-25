@@ -1122,6 +1122,17 @@ function registerCommands() {
   guarded("/mega", async (ctx) => megaImpl(ctx, (ctx.args[0] || "").toLowerCase()));
   guarded("/mega_status", async (ctx) => megaImpl(ctx, "status"));
   guarded("/mega_test", async (ctx) => megaImpl(ctx, "test"));
+  // Drops the cached MEGA session and any cool-down. Needed after the
+  // credentials change in Render, where a stale session from the old password
+  // would keep failing and keep the cool-down armed.
+  guarded("/mega_reset", async (ctx) => {
+    const { resetMegaSession } = await megaModule();
+    resetMegaSession();
+    await sendMessage(
+      chatId,
+      "🔄 تم مسح جلسة MEGA.\n<code>/mega_test</code> الحين يجرب الدخول من جديد."
+    );
+  });
 
   async function megaImpl({ chatId }, sub) {
     const { getMegaConfig, probeMega, isMegaConfigured } = await megaModule();
