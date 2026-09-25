@@ -47,6 +47,16 @@ const DEFAULTS = {
   // When true the scheduled check also refreshes the backup snapshot, so a
   // copy of the platform is always waiting without asking for it.
   backup_auto: true,
+  // --- MEGA -----------------------------------------------------------------
+  // The folder link the bot posts after each backup. Defaults to the shared
+  // archive folder; the student can point it at any folder they can open.
+  mega_folder_link: "https://mega.nz/folder/itwAWC7T#QhhnE5EiLy8qEHaYrLQoZQ",
+  // Send the backup snapshot to MEGA on every run. Turning it off keeps the
+  // backup Telegram-only while the account details are being sorted out.
+  mega_enabled: true,
+  // --- Display --------------------------------------------------------------
+  // 24-hour clock everywhere, since the platform is Arabic-locale.
+  time_format: "24h",
 };
 
 // Human-readable labels per value, shown on the buttons themselves.
@@ -70,6 +80,11 @@ export const LABELS = {
   backup_materials: { true: "المواد: نعم", false: "المواد: لا" },
   backup_format: { image: "صورة بس", text: "نص بس", both: "صورة + نص" },
   backup_auto: { true: "تلقائي: شغال", false: "تلقائي: متوقف" },
+  // MEGA section. The link toggle is a pair of well-known values rather than
+  // free text — a button cannot hold a URL the student would type.
+  mega_enabled: { true: "MEGA: شغال", false: "MEGA: متوقف" },
+  // Clock format, shown in captions and reminders.
+  time_format: { "24h": "٢٤ ساعة", "12h": "١٢ ساعة" },
 };
 
 // The panel body names each setting, so the short button labels stay
@@ -83,6 +98,10 @@ export const SETTING_HINTS = {
   remind_hours: "التذكير قبل",
   check_interval: "فحص كل",
   ai_enabled: "الذكاء",
+  backup_format: "شكل النسخة",
+  backup_auto: "التلقائي",
+  mega_enabled: "النسخ السحابي",
+  time_format: "الساعة",
 };
 
 const KEY = (chatId) => `settings:${chatId}`;
@@ -139,7 +158,7 @@ export const PANEL = [
   },
   {
     title: "🔔 التنبيهات",
-    items: ["notify_digest", "remind_hours"],
+    items: ["notify_digest", "remind_hours", "time_format"],
   },
   {
     title: "🔄 المراقبة",
@@ -150,11 +169,14 @@ export const PANEL = [
     items: ["ai_enabled"],
   },
   {
-    title: "💾 النسخة الاحتياطية — النطاقات",
-    items: ["backup_schedule", "backup_assignments", "backup_courses", "backup_grades", "backup_materials"],
+    // Backup and MEGA are one concern: MEGA is where the backup lands, so
+    // its switch belongs with the scopes and the format rather than in a
+    // section of its own.
+    title: "💾 النسخة الاحتياطية",
+    items: ["backup_auto", "backup_format", "mega_enabled"],
   },
   {
-    title: "💾 النسخة الاحتياطية — الشكل",
-    items: ["backup_format", "backup_auto"],
+    title: "💾 النطاقات",
+    items: ["backup_schedule", "backup_assignments", "backup_courses", "backup_grades", "backup_materials"],
   },
 ];

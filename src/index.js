@@ -505,10 +505,15 @@ function registerCommands() {
     await sendMessage(chatId, `${state === "on" ? "🟢" : "⚫"} نطاق <code>${scope}</code> ${state === "on" ? "شُغّل" : "أُطفئ"}`);
   });
 
-  guarded("/interval", async ({ chatId, args }) => {
+  // /interval_<n> — the cadence in the token, no space. The value still has
+  // to live in the environment to take effect, so the command reports where
+  // to set it rather than pretending it changed something.
+  guarded(/^\/interval_(\d+)$/, async (ctx) => intervalImpl(ctx, Number(ctx.match[1])));
+  guarded("/interval", async (ctx) => intervalImpl(ctx, Number(ctx.args[0])));
+
+  async function intervalImpl({ chatId }, n) {
     if (!(await requireLogin(chatId))) return;
     const current = Number(process.env.CHECK_INTERVAL_MIN) || 10;
-    const n = Number(args[0]);
     if (!n || n < 5 || n > 120) {
       await sendMessage(
         chatId,
@@ -516,7 +521,23 @@ function registerCommands() {
       );
       return;
     }
-  });
+  }
+
+  // Scope toggles as single tokens: /watch_assignments_on instead of
+  // "/watch assignments on".
+  const WATCH_SCOPES = ["assignments", "materials", "exams", "grades", "notifications"];
+  for (const scope of WATCH_SCOPES) {
+    guarded(`/watch_${scope}_on`, async (ctx) => watchSetImpl(ctx, scope, "on"));
+    guarded(`/watch_${scope}_off`, async (ctx) => watchSetImpl(ctx, scope, "off"));
+  }
+
+  async function watchSetImpl({ chatId }, scope, state) {
+    if (!(await requireLogin(chatId))) return;
+    const cfg = await getKv("watch_config", {});
+    cfg[scope] = state === "on";
+    await setKv("watch_config", cfg);
+    await sendMessage(chatId, `${state === "on" ? "🟢" : "⚫"} نطاق <code>${scope}</code> ${state === "on" ? "شُغّل" : "أُطفئ"}`);
+  }
 
   guarded("/who", async ({ chatId }) => {
     if (!(await requireLogin(chatId))) return;
@@ -711,18 +732,24 @@ function registerCommands() {
     await sendMessage(chatId, formatList(header, shown, fmt) + more);
   };
 
-  guarded("/assignments", async ({ chatId, args }) => {
+  // Sub-commands carry the filter in the token so no argument has to be
+  // typed — "/assignments pending" becomes /assignments_pending.
+  guarded("/assignments_pending", async (ctx) => assignmentsImpl(ctx, "pending"));
+  guarded("/assignments_graded", async (ctx) => assignmentsImpl(ctx, "graded"));
+  guarded("/assignments_overdue", async (ctx) => assignmentsImpl(ctx, "overdue"));
+  guarded("/assignments", async (ctx) => assignmentsImpl(ctx, ctx.args[0]));
+
+  async function assignmentsImpl({ chatId }, filter) {
     if (!(await requireLogin(chatId))) return;
     const tokens = await getTokens();
     const items = await fetchScope("assignments", tokens.accessToken);
-    const filter = args[0];
     let rows = items;
     if (filter === "pending") rows = items.filter((a) => !["Graded", "Submitted"].includes(a.status));
     if (filter === "graded") rows = items.filter((a) => a.gradePoints != null || a.status === "Graded");
     if (filter === "overdue") rows = items.filter((a) => a.isOverdue);
     const label = { pending: "غير مسلّمة", graded: "المصححة", overdue: "المتأخرة" }[filter];
     await sendList(chatId, `📝 الواجبات${label ? ` — ${label}` : ""}`, rows, formatAssignment);
-  });
+  }
 
   guarded("/materials", async ({ chatId }) => {
     if (!(await requireLogin(chatId))) return;
@@ -846,9 +873,13 @@ function registerCommands() {
   // /download <id> sends the file link for a material the bot has seen.
   // The platform exposes fileUrl (S3) or externalUrl; the frontend modal uses
   // exactly these to download/open, so we do the same.
-  guarded("/download", async ({ chatId, args }) => {
+  // /download_<n> — the material number is part of the token, so the command
+  // stays a single word. /download still shows the picker.
+  guarded(/^\/download_(\d+)$/, async (ctx) => downloadImpl(ctx, ctx.match[1]));
+  guarded("/download", async (ctx) => downloadImpl(ctx, ctx.args[0]));
+
+  async function downloadImpl({ chatId }, target) {
     if (!(await requireLogin(chatId))) return;
-    const target = args[0];
     const tokens = await getTokens();
     const materials = await fetchScope("materials", tokens.accessToken);
     if (!target) {
@@ -857,7 +888,7 @@ function registerCommands() {
       materials.slice(0, 15).forEach((m, i) => {
         lines.push(`<code>${i + 1}</code> — ${esc(String(m.title).slice(0, 45))}`);
       });
-      lines.push("", `<i>اكتب: <code>/download 3</code></i>`);
+      lines.push("", `<i>اكتب: <code>/download_3</code></i>`);
       await sendMessage(chatId, lines.join("\n"));
       return;
     }
@@ -887,7 +918,7 @@ function registerCommands() {
       chatId,
       `📥 <b>${esc(m.title)}</b>${size}\n\n🔗 <a href="${esc(link)}">اضغط لتحميل الملف</a>\n\n<i>الرابط قد ينتهي بعد فترة — لو ما فتح، جرّب مرة ثانية.</i>`
     );
-  });
+  }
 
   guarded("/unread", async ({ chatId }) => {
     if (!(await requireLogin(chatId))) return;
@@ -968,7 +999,7 @@ function registerCommands() {
     // configured in the environment this whole step is skipped and the
     // backup stays in Telegram.
     const { getMegaConfig, uploadSnapshot, uploadIndex } = await megaModule();
-    const megaCfg = getMegaConfig();
+    const megaCfg = cfg.mega_enabled === false ? null : getMegaConfig();
     const dateLabel = new Date().toISOString().slice(0, 10);
     const snapshot = [];
 
@@ -1032,6 +1063,10 @@ function registerCommands() {
     // folder, which is the only URL the student needs.
     let megaLink = null;
     let megaError = null;
+    // The folder the student pointed at is the one to open. The per-run link
+    // megajs publishes is more precise but not always available, so it is
+    // preferred and the configured folder is the fallback.
+    const configuredLink = cfg.mega_folder_link || null;
     if (megaCfg && snapshot.length) {
       try {
         const res = await uploadIndex({
@@ -1044,7 +1079,7 @@ function registerCommands() {
             fetchedAt: new Date().toISOString(),
           })),
         });
-        megaLink = res?.link || null;
+        megaLink = res?.link || configuredLink;
       } catch (err) {
         // A failed cloud leg must not cost the backup itself: everything is
         // already in Telegram. Surface the reason so the student can fix the
@@ -1292,11 +1327,13 @@ function registerCommands() {
   // one from the /login chain, then reads the real /student/schedule HTML
   // and redraws it in the platform's own palette. If the session cannot be
   // established it falls back to the API-driven grid rather than failing.
-  guarded("/site", async ({ chatId, args }) => {
+  guarded("/site_schedule", async (ctx) => siteImpl(ctx, "schedule"));
+  guarded("/site", async (ctx) => siteImpl(ctx, String(ctx.args[0] || "schedule")));
+
+  async function siteImpl({ chatId }, scope) {
     if (!(await requireLogin(chatId))) return;
-    const scope = String(args[0] || "schedule");
     if (scope !== "schedule") {
-      await sendMessage(chatId, "📸 الحين يدعم: <code>/site schedule</code>");
+      await sendMessage(chatId, "📸 الحين يدعم: <code>/site_schedule</code>");
       return;
     }
     const tokens = await getTokens();
@@ -1334,10 +1371,13 @@ function registerCommands() {
     } catch (err) {
       await sendMessage(chatId, `⚠️ ما قدرت أصوّر: <code>${esc(err.message)}</code>`);
     }
-  });
+  }
 
-  guarded("/remind", async ({ chatId, args }) => {
-    const arg = String(args[0] || "").toLowerCase();
+  guarded("/remind_on", async (ctx) => remindImpl(ctx, "on"));
+  guarded("/remind_off", async (ctx) => remindImpl(ctx, "off"));
+  guarded("/remind", async (ctx) => remindImpl(ctx, String(ctx.args[0] || "").toLowerCase()));
+
+  async function remindImpl({ chatId }, arg) {
     const cfg = await getKv("reminders_config", { enabled: true });
     if (arg === "on" || arg === "off") {
       cfg.enabled = arg === "on";
@@ -1354,13 +1394,16 @@ function registerCommands() {
       chatId,
       `⏰ <b>تنبيهات الموعد النهائي</b> — <b>${cfg.enabled === false ? "مطفية 🔕" : "مفعّلة ✅"}</b>\n\n` +
         "باقي عليه <b>أقل من ٢٤ ساعة</b> → تنبيه\nفات الموعد → تنبيه ثاني\n\n" +
-        "<code>/remind on</code> — تشغيل\n<code>/remind off</code> — إيقاف"
+        "<code>/remind_on</code> — تشغيل\n<code>/remind_off</code> — إيقاف"
     );
-  });
+  }
 
   // Master switch for the "new item appeared" notifications.
-  guarded("/newalerts", async ({ chatId, args }) => {
-    const arg = String(args[0] || "").toLowerCase();
+  guarded("/newalerts_on", async (ctx) => newalertsImpl(ctx, "on"));
+  guarded("/newalerts_off", async (ctx) => newalertsImpl(ctx, "off"));
+  guarded("/newalerts", async (ctx) => newalertsImpl(ctx, String(ctx.args[0] || "").toLowerCase()));
+
+  async function newalertsImpl({ chatId }, arg) {
     const cfg = await getKv("watch_config", {});
     if (arg === "on" || arg === "off") {
       // Keep scope toggles, flip only the new-alert kill switch.
@@ -1377,15 +1420,19 @@ function registerCommands() {
     await sendMessage(
       chatId,
       `🔔 <b>تنبيهات الجديد</b> — <b>${cfg.newAlerts === false ? "مطفية 🔕" : "مفعّلة ✅"}</b>\n\n` +
-        "<code>/newalerts on</code> — تشغيل\n<code>/newalerts off</code> — إيقاف"
+        "<code>/newalerts_on</code> — تشغيل\n<code>/newalerts_off</code> — إيقاف"
     );
-  });
+  }
 
   // Recall earlier conversation. The model only sees the last few exchanges
   // by default; this lets the student page back further on demand.
-  guarded("/history", async ({ chatId, args }) => {
-    const n = Math.min(Number(args[0]) || 10, 20);
-    const rows = getHistory(chatId, n);
+  // /history_<n> keeps the count in the token, so no space is needed.
+  guarded(/^\/history_(\d+)$/, async ({ chatId, match }) => historyImpl(chatId, Number(match[1])));
+  guarded("/history", async (ctx) => historyImpl(ctx.chatId, Number(ctx.args[0]) || 10));
+
+  async function historyImpl(chatId, n) {
+    const count = Math.min(n || 10, 20);
+    const rows = getHistory(chatId, count);
     if (!rows.length) {
       await sendMessage(chatId, "📭 ما في محادثة محفوظة الحين.\n\n<i>اكتب أي سؤال وبأذكره.</i>");
       return;
@@ -1397,7 +1444,7 @@ function registerCommands() {
       lines.push("");
     }
     await sendMessage(chatId, lines.join("\n"));
-  });
+  }
 
   guarded("/forget", async ({ chatId }) => {
     clearMemory(chatId);
@@ -1487,15 +1534,21 @@ function registerCommands() {
     }
   }
 
-  guarded("/export", async ({ chatId, args }) => {
+  // One sub-command per scope, so the export is one token.
+  const EXPORT_SCOPES = ["assignments", "materials", "exams", "grades", "courses", "schedule", "notifications"];
+  for (const scope of EXPORT_SCOPES) {
+    guarded(`/export_${scope}`, async (ctx) => exportImpl(ctx, scope));
+  }
+  guarded("/export", async (ctx) => exportImpl(ctx, String(ctx.args[0] || "")));
+
+  async function exportImpl({ chatId }, scope) {
     if (!(await requireLogin(chatId))) return;
-    const scope = args[0];
-    const valid = ["assignments", "materials", "exams", "grades", "courses", "schedule", "notifications"];
+    const valid = EXPORT_SCOPES;
     if (!valid.includes(scope)) {
       await sendMessage(
         chatId,
-        "📥 <b>تصدير JSON</b>\n\nالاستعمال: <code>/export &lt;نطاق&gt;</code>\n\nالنطاقات المتاحة:\n<code>" +
-          valid.join("</code> · <code>") +
+        "📥 <b>تصدير JSON</b>\n\nالاستعمال: <code>/export_&lt;نطاق&gt;</code>\n\nالنطاقات المتاحة:\n<code>" +
+          valid.map((s) => `/export_${s}`).join("</code> · <code>") +
           "</code>"
       );
       return;
@@ -1503,77 +1556,84 @@ function registerCommands() {
     const tokens = await getTokens();
     const items = await fetchScope(scope, tokens.accessToken);
     await sendMessage(chatId, `<code>${esc(JSON.stringify(items, null, 1).slice(0, 3800))}</code>`);
-  });
+  }
 }
 
 const HELP_TEXT = `<b>🤖 أوامر بوت طويق</b>
 
 📫 <b>تواصل مع البوت:</b> <code>twqbot@duck.com</code>
 
-<b>كل المنصة:</b>
-/all — كل شي في المنصة (واجبات + مواد + اختبارات + درجات + إشعارات)
+<b>🌟 الأساسيات:</b>
+/all — كل شي في المنصة
 /dashboard — ملخص سريع من لوحة طويق
-/backup — 🆕 <b>نسخة احتياطية كاملة</b> لكل المنصة
+/today — حصص اليوم بس
+/backup — 💾 <b>نسخة احتياطية كاملة</b>
+/help — هذه القائمة
 
-<b>أوامر لكل نطاق:</b>
-/assignments [pending / graded / overdue] — الواجبات
+<b>📚 لكل نطاق:</b>
+/assignments — الواجبات
+/assignments_pending — الواجبات المعلّقة
+/assignments_graded — الواجبات المُصحَّحة
+/assignments_overdue — الواجبات المتأخرة
 /materials — كل المواد
 /exams — الاختبارات المتاحة
 /grades — كل الدرجات
 /courses — مقرراتي (مع الحضور والدرجات)
 /schedule — الجدول الأسبوعي
-/schedule today — حصص يوم محدد
-/today — حصص اليوم بس
+/schedule_today — حصص اليوم
 /attendance — نسبة الحضور
 /notifications — الإشعارات
 /unread — عدد الإشعارات غير المقروءة
-/download 12 — تحميل مادة برقمها
+/due — الواجبات المستحقة خلال ٢٤ ساعة
+/download_12 — تحميل مادة برقمها
 
 <b>📸 الصور:</b>
-/img schedule — الجدول كصورة مرتبة
-/img grid — الجدول بشبكة الأيام والأوقات
-/img assignments — الواجبات كصورة
-/img grades — الدرجات كصورة
-/site schedule — <b>صورة الجدول مثل ما يظهر في المنصة بالضبط</b>
+/img_schedule — الجدول كصورة مرتبة
+/img_grid — الجدول بشبكة الأيام والأوقات
+/img_assignments — الواجبات كصورة
+/img_grades — الدرجات كصورة
+/site_schedule — صورة الجدول مثل المنصة بالضبط
 
 <b>⏰ التنبيهات:</b>
-/remind on — تنبيه "باقيلك بس يوم" (on/off)
-/newalerts on — تنبيهات الشي الجديد (on/off)
-/history 10 — استرجع آخر محادثات
+/remind_on — تنبيه "باقيلك بس يوم"
+/remind_off — إيقاف تنبيه اليوم
+/newalerts_on — تنبيهات الشي الجديد
+/newalerts_off — إيقاف تنبيهات الجديد
+/history_10 — استرجع آخر ١٠ محادثات
 /forget — امسح ذاكرة المحادثة
-/export grades — تصدير JSON لأي نطاق
-/due — الواجبات المستحقة خلال ٢٤ ساعة
+/export_grades — تصدير JSON لأي نطاق
 
 <b>🤖 الذكاء الاصطناعي:</b>
 /ai — حالة الذكاء وإعداداته
-أي كلام بدون / — اسأله أي شي عن منصتك!
+<i>أي كلام بدون / — اسأله أي شي عن منصتك!</i>
 
 <b>🛠 التحكم:</b>
 /status — حالة البوت
 /check — فحص فوري
 /fresh — ✅ أثبت إن البيانات من المنصة الحين
 /settings — ⚙️ لوحة الإعدادات (أزرار)
-/backupcfg — 🆕 <b>إعدادات النسخة الاحتياطية</b> (أزرار)
+/backupcfg — 💾 إعدادات النسخة الاحتياطية (أزرار)
+/watch — قائمة النطاقات وحالتها
+/watch_assignments_on — شغّل مراقبة الواجبات
+/watch_assignments_off — أوقف مراقبة الواجبات
+/interval_15 — تغيير دقيقة الفحص (٥–١٢٠)
+/seen — آخر ما رُصد
+/reset — مسح السجل
 
 <b>☁️ MEGA (نسخ احتياطي سحابي):</b>
 /guide — 📚 <b>كيف يشتغل MEGA</b>
 /mega_status — حالة الاتصال
 /mega_test — تجربة الدخول
+/mega_reset — مسح الجلسة بعد تغيير كلمة السر
 <i>الربط من متغيرات البيئة: MEGA_EMAIL و MEGA_PASSWORD</i>
 
 <b>👤 الحساب:</b>
 /identify — 🆕 <b>عرّف البوت بنفسك</b> (زر مشاركة الرقم)
 /phone_050xxxxxxx — حفظ أو تغيير رقمك
 /who — رقمك، دورك، وحالة MEGA
-/watch assignments on|off — تشغيل/إيقاف مراقبة نطاق
-/interval 15 — تغيير دقيقة الفحص
-/seen — آخر ما رُصد
-/reset — مسح السجل
-/who — الحساب الحالي + رقمك ودورك
-/identify — 🆕 <b>عرّف البوت بنفسك</b> (زر مشاركة الرقم من تلجرام)
-/phone 050xxxxxxx — حفظ أو تغيير رقمك يدويًا
 /logout — تسجيل الخروج
-/help — هذه القائمة`;
+
+<i>💡 كل الأوامر بدون مسافة — اكتبها بالضبط مثل ما هي مكتوبة.</i>`;
 
 // --- boot ---------------------------------------------------------------------
 // Supabase free tier can take a few seconds to wake from auto-pause, and fresh
