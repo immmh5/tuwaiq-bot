@@ -1185,13 +1185,6 @@ function registerCommands() {
     );
   }
 
-  // Explicit sub-commands so no command ever needs a space — Telegram would
-  // treat "/mega test" as a command plus an argument, and the student wants
-  // a single token for everything. Each one re-runs /mega with the argument
-  // baked in, so there is one implementation of the MEGA logic.
-  guarded("/mega_status", async (ctx) => megaSub(ctx, "status"));
-  guarded("/mega_test", async (ctx) => megaSub(ctx, "test"));
-
   // The callback behind the MEGA button on the backup panel, so the student
   // can reach the link flow without typing the command.
   onCallback("mega_help", async ({ chatId, queryId }) => {
