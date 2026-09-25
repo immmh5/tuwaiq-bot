@@ -383,6 +383,21 @@ export async function startWatcher() {
     } catch (err) {
       console.error("scheduled check error:", err.message);
     }
+    // The clock-driven features (morning briefing, exam countdown, grade
+    // deltas) ride the same tick. They are individually gated by settings,
+    // and each one records what it already announced, so nothing repeats.
+    try {
+      const { runScheduler } = await import("./scheduler.js");
+      const { sendMessage } = await import("./telegram.js");
+      const chatId = process.env.TELEGRAM_CHAT_ID;
+      if (chatId) {
+        await runScheduler({
+          send: (text) => sendMessage(chatId, text),
+        });
+      }
+    } catch (err) {
+      console.error("scheduler tick error:", err.message);
+    }
   };
   // Fire immediately on boot, then on the interval
   setTimeout(run, 5000);

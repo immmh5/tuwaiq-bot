@@ -1,7 +1,7 @@
 // src/index.js — boot: store, telegram commands, web server, watcher
 import express from "express";
 import { initStore, getKv, setKv, getCredentials, resetSeen, listSeen, getTokens, isOwner, isOwnerOf as isOwnerOfStore, upsertUser, getUser, setPhone, getPhone, isOwnerPhone } from "./store.js";
-import { createWebApp } from "./web.js";
+import { createWebApp, startSelfPing } from "./web.js";
 import {
   setTelegramToken,
   on,
@@ -710,6 +710,26 @@ function registerCommands() {
       lines.push(`• <code>${r.kind}</code> ${escapeHtml(r.title || "—")} — ${at}`);
     }
     await sendMessage(chatId, lines.join("\n"));
+  });
+
+  // Manual test of the proactive notifications: runs the scheduler once and
+  // shows what fired, so the student can verify the morning briefing or the
+  // exam countdown without waiting for 06:30.
+  guarded("/proactive", async ({ chatId }) => {
+    if (!(await requireLogin(chatId))) return;
+    await sendMessage(chatId, "📣 أجرب التنبيهات الذكية الحين…").catch(() => {});
+    try {
+      const { runScheduler } = await import("./scheduler.js");
+      const res = await runScheduler({ send: (text) => sendMessage(chatId, text) });
+      if (!res.morning && !res.exams && !res.grades) {
+        await sendMessage(
+          chatId,
+          "✅ كل التنبيهات إما وصلت مسبقًا أو ما في شي جديد.\n\n<i>الصباحية تأتي مرة في اليوم، والاختبارات تتذكّر مرة واحدة لكل موعد.</i>"
+        );
+      }
+    } catch (err) {
+      await sendMessage(chatId, `⚠️ ما قدرت: <code>${esc(err.message)}</code>`);
+    }
   });
 
   guarded("/reset", async ({ chatId }) => {
@@ -1641,6 +1661,11 @@ const HELP_TEXT = `<b>🤖 أوامر بوت طويق</b>
 /img_assignments — الواجبات كصورة
 /img_grades — الدرجات كصورة
 
+<b>📣 التنبيهات الذكية:</b>
+/proactive — جرّبها الحين
+<i>الصباحية كل يوم ٦:٣٠ ص + عدّاد الاختبارات + تغيّر الدرجات</i>
+<i>تشغّلها وتطفّيها من /settings</i>
+
 <b>⏰ التنبيهات:</b>
 /remind_on — تنبيه "باقيلك بس يوم"
 /remind_off — إيقاف تنبيه اليوم
@@ -1739,6 +1764,10 @@ async function mainWithRetry() {
 
   const app = createWebApp();
   app.listen(PORT, () => console.log(`listening on :${PORT}`));
+
+  // Keep the Render free-tier instance warm: the service sleeps after 15 min
+  // of no inbound traffic, and a self-ping every 13 min is enough to count.
+  startSelfPing();
 
   if (!process.env.TELEGRAM_CHAT_ID) {
     console.warn("TELEGRAM_CHAT_ID missing — send /start to the bot and set it as env var");

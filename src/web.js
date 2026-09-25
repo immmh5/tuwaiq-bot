@@ -36,6 +36,29 @@ async function probeTelegram(chatId) {
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+// Render's free tier sleeps a web service after ~15 minutes of no inbound
+// traffic. The bot pings its own /health every 13 minutes, which counts as
+// inbound traffic and keeps it warm — notifications land as they happen
+// instead of after a ~30 second cold start. The URL is taken from the
+// environment, so this only self-pings on Render, never locally.
+let pingTimer = null;
+export function startSelfPing() {
+  const base = process.env.RENDER_EXTERNAL_URL || process.env.APP_BASE_URL || "";
+  if (!base || pingTimer) return;
+  const url = base.replace(/\/$/, "") + "/health";
+  const loop = async () => {
+    try {
+      await fetch(url, { method: "GET" });
+    } catch {
+      // A failed ping is fine to swallow: the next tick tries again, and the
+      // health check is Render's responsibility anyway.
+    }
+  };
+  pingTimer = setInterval(loop, 13 * 60 * 1000);
+  // Fire once right away so the URL is validated from boot, not 13 min in.
+  loop().catch(() => {});
+}
+
 export function createWebApp() {
   const app = express();
   app.use(express.urlencoded({ extended: true }));

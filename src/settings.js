@@ -57,6 +57,13 @@ const DEFAULTS = {
   // --- Display --------------------------------------------------------------
   // 24-hour clock everywhere, since the platform is Arabic-locale.
   time_format: "24h",
+  // --- Proactive notifications ---------------------------------------------
+  // These are the clock-driven messages: the morning briefing, the exam
+  // countdown, and the grade-change report. All default on and all flip off
+  // independently from the panel.
+  morning_briefing: true,
+  exam_countdown: true,
+  grade_alerts: true,
 };
 
 // Human-readable labels per value, shown on the buttons themselves.
@@ -69,6 +76,9 @@ export const LABELS = {
   schedule_show_room: { true: "القاعة: ظاهرة", false: "القاعة: مخفية" },
   notify_digest: { true: "مجمّعة", false: "فردية" },
   remind_hours: { 24: "٢٤ ساعة", 12: "١٢ ساعة", 48: "٤٨ ساعة", 6: "٦ ساعات" },
+  morning_briefing: { true: "الصباحية: شغّالة", false: "الصباحية: مطفية" },
+  exam_countdown: { true: "الاختبارات: شغّال", false: "الاختبارات: مطفية" },
+  grade_alerts: { true: "الدرجات: شغّال", false: "الدرجات: مطفية" },
   check_interval: { 10: "١٠ دقائق", 5: "٥ دقائق", 30: "٣٠ دقيقة", 60: "ساعة" },
   ai_enabled: { true: "مفعّل", false: "متوقف" },
   // Scope toggles for the backup. The label carries the scope name so the
@@ -102,6 +112,9 @@ export const SETTING_HINTS = {
   backup_auto: "التلقائي",
   mega_enabled: "النسخ السحابي",
   time_format: "الساعة",
+  morning_briefing: "صباحية يومية",
+  exam_countdown: "عدّاد الاختبارات",
+  grade_alerts: "تنبيه تغيّر الدرجات",
 };
 
 const KEY = (chatId) => `settings:${chatId}`;
@@ -162,6 +175,12 @@ export const PANEL = [
     title: "🔔 التنبيهات",
     key: "alerts",
     items: ["notify_digest", "remind_hours", "time_format"],
+  },
+  {
+    // The clock-driven messages: what the bot says unprompted, and when.
+    title: "📣 التنبيهات الذكية",
+    key: "smart",
+    items: ["morning_briefing", "exam_countdown", "grade_alerts"],
   },
   {
     title: "🔄 المراقبة",
