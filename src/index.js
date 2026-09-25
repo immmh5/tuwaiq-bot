@@ -175,17 +175,6 @@ async function answerWithAI(chatId, question) {
 
 // main() is retained for reference; mainWithRetry below is what actually boots.
 async function main() {
-  // megajs raises login failures as stray rejections from its own internals
-  // instead of the error event a caller can await, so a wrong MEGA password
-  // would otherwise take the whole process down. Log and keep running: a
-  // failed backup is recoverable, a dead bot is not.
-  process.on("unhandledRejection", (reason) => {
-    console.warn("unhandledRejection:", String(reason?.message || reason).slice(0, 200));
-  });
-  process.on("uncaughtException", (err) => {
-    console.warn("uncaughtException:", String(err?.message || err).slice(0, 200));
-  });
-
   await initStore(process.env.DATABASE_URL);
   const app = createWebApp();
   app.listen(PORT, () => console.log(`listening on :${PORT}`));
@@ -1042,6 +1031,7 @@ function registerCommands() {
     // dated folder describes itself fully. It also publishes a link to that
     // folder, which is the only URL the student needs.
     let megaLink = null;
+    let megaError = null;
     if (megaCfg && snapshot.length) {
       try {
         const res = await uploadIndex({
@@ -1056,7 +1046,11 @@ function registerCommands() {
         });
         megaLink = res?.link || null;
       } catch (err) {
+        // A failed cloud leg must not cost the backup itself: everything is
+        // already in Telegram. Surface the reason so the student can fix the
+        // credentials instead of guessing why the link stopped coming.
         console.error("mega index upload failed:", err.message);
+        megaError = err.message || "فشل الرفع لـ MEGA";
       }
     }
 
@@ -1068,6 +1062,9 @@ function registerCommands() {
         megaCfg && snapshot.length
           ? `☁️ MEGA: ${snapshot.length} ملف في مجلد <code>${dateLabel}</code>`
           : "☁️ MEGA: غير مربوط — قلّل فقط لـ تلجرام",
+        megaError
+          ? `⚠️ <b>MEGA فشل:</b> <code>${esc(megaError).slice(0, 150)}</code>\n<i>النسخة وصلت في تلجرام — أصلح MEGA من المتغيرات.</i>`
+          : null,
         "",
         `<i>${
           cfg.backup_auto === false
@@ -1548,6 +1545,17 @@ const HELP_TEXT = `<b>🤖 أوامر بوت طويق</b>
 // Render instances hit transient routing errors. Retry the DB-backed steps and
 // always start the web server so Render's health check has something to hit.
 async function mainWithRetry() {
+  // megajs raises login failures as stray rejections from its own internals
+  // instead of an error event a caller can await, so a wrong MEGA password
+  // would otherwise kill the process mid-command. Log and keep running: a
+  // failed backup is recoverable, a dead bot is not.
+  process.on("unhandledRejection", (reason) => {
+    console.warn("unhandledRejection:", String(reason?.message || reason).slice(0, 200));
+  });
+  process.on("uncaughtException", (err) => {
+    console.warn("uncaughtException:", String(err?.message || err).slice(0, 200));
+  });
+
   let storeOk = false;
   for (let i = 1; i <= 5 && !storeOk; i++) {
     try {

@@ -94,16 +94,30 @@ const ROOT_FOLDER = "طويق-نسخ-احتياطي";
 //       فهرس.json
 //
 // Numbers keep the scopes in a stable order regardless of the viewer's sort.
+// Every MEGA call waits with a deadline. megajs never hands a login failure
+// to the caller — it builds the error internally and drops it, so without a
+// bound an operation would hang forever and the command would never answer.
+const MEGA_TIMEOUT = 30000;
+
+function withTimeout(promise, label) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error(`${label} — MEGA ما رد خلال ${MEGA_TIMEOUT / 1000}ث`)), MEGA_TIMEOUT)
+    ),
+  ]);
+}
+
 export async function uploadSnapshot({ cfg = getMegaConfig(), dateLabel, scopeIndex, scopeName, payload }) {
   if (!cfg) throw new Error("MEGA غير مُعد");
   const storage = openStorage(cfg);
   try {
-    await ready(storage);
+    await withTimeout(ready(storage), "الدخول لـ MEGA");
     const root = await ensureFolder(storage.root, ROOT_FOLDER);
     const dayFolder = await ensureFolder(root, dateLabel);
     const name = `${String(scopeIndex).padStart(2, "0")}-${scopeName}.json`;
     const data = Buffer.from(JSON.stringify(payload, null, 2), "utf8");
-    await dayFolder.upload({ name }, data);
+    await withTimeout(dayFolder.upload({ name }, data), `رفع ${name}`);
     storage.close();
     return name;
   } catch (err) {
@@ -120,7 +134,7 @@ export async function uploadIndex({ cfg = getMegaConfig(), dateLabel, entries })
   if (!cfg) throw new Error("MEGA غير مُعد");
   const storage = openStorage(cfg);
   try {
-    await ready(storage);
+    await withTimeout(ready(storage), "الدخول لـ MEGA");
     const root = await ensureFolder(storage.root, ROOT_FOLDER);
     const dayFolder = await ensureFolder(root, dateLabel);
     const data = Buffer.from(
@@ -135,7 +149,7 @@ export async function uploadIndex({ cfg = getMegaConfig(), dateLabel, entries })
       ),
       "utf8"
     );
-    await dayFolder.upload({ name: "فهرس.json" }, data);
+    await withTimeout(dayFolder.upload({ name: "فهرس.json" }, data), "رفع الفهرس");
     const link = await folderLink(dayFolder);
     storage.close();
     return { link };
