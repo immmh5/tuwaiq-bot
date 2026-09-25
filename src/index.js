@@ -1164,7 +1164,31 @@ function registerCommands() {
       await sendMessage(chatId, "🧪 أجرب الدخول لحساب MEGA…").catch(() => {});
       const probe = await probeMega();
       if (!probe.ok) {
-        await sendMessage(chatId, `⚠️ فشل الدخول: <code>${esc(probe.error).slice(0, 150)}</code>`);
+        // megajs reports a wrong email and a wrong password identically as
+        // "object not found", and an unconfirmed account hangs, so the fix
+        // is usually in the Render variables rather than the code.
+        const raw = String(probe.error || "");
+        const isAuth = /not found|wrong|expired|timeout|ما رد/i.test(raw);
+        await sendMessage(
+          chatId,
+          [
+            `⚠️ <b>فشل الدخول لـ MEGA</b>`,
+            `<code>${esc(raw).slice(0, 150)}</code>`,
+            "",
+            isAuth
+              ? [
+                  "<b>الأسباب المحتملة:</b>",
+                  "1️⃣ الإيميل <code>MEGA_EMAIL</code> غلط أو غير مُفعّل",
+                  "2️⃣ كلمة السر <code>MEGA_PASSWORD</code> غلط",
+                  "3️⃣ الحساب ما أكّد بالإيميل بعد",
+                  "",
+                  "<i>افتح MEGA، سجّل دخول يدويًا بنفس البيانات — لو ما قدرت، البوت كمان ما يقدر.</i>",
+                ].join("\n")
+              : null,
+          ]
+            .filter((x) => x !== null)
+            .join("\n")
+        );
         return;
       }
       await sendMessage(chatId, "✅ الدخول نجح! الحساب جاهز للنسخ الاحتياطي.");
