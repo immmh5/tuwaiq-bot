@@ -46,7 +46,7 @@ export async function probeMega(cfg = getMegaConfig()) {
 }
 
 function openStorage(cfg) {
-  return Storage({
+  return new Storage({
     email: cfg.email,
     password: cfg.password,
     autoload: false,

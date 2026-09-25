@@ -628,13 +628,18 @@ function registerCommands() {
           `<b>الخطوة ${step.n} من ${MEGA_STEPS.length}</b>`,
         );
       } catch (err) {
+        // Log the real reason before falling back: an image that silently
+        // degrades to text is a bug the student reports as "the pictures
+        // stopped coming", so keep the cause reachable from the logs.
+        console.warn("guide: image failed, falling back to text:", err.message);
         // If rendering is unavailable, the step still arrives as text so
-        // the guide is never silently truncated.
+        // the guide is never silently truncated. The reason travels with
+        // the message so the failure is visible from Telegram too.
         await sendMessage(
           chatId,
           `📌 <b>الخطوة ${step.n}: ${esc(step.title)}</b>\n${esc(step.body)}${
             step.hint ? `\n\n✓ ${esc(step.hint)}` : ""
-          }`,
+          }\n\n<i>الصورة ما ظهرت: <code>${esc(err.message).slice(0, 120)}</code></i>`,
         );
       }
     }

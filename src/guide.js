@@ -89,21 +89,21 @@ function esc(s) {
 const MEGA_STEPS = [
   {
     n: 1,
-    title: "افتح حسابك في MEGA",
-    body: "ادخل على حسابك في MEGA\nمن المتصفح أو التطبيق",
-    hint: "لازم يكون عندك حساب — البوت يرفع داخله",
+    title: "سوّي حساب MEGA للبوت",
+    body: "افتح MEGA وسجّل حساب بالإيميل:\ntwqbot@duck.com",
+    hint: "هذا حساب البوت الرسمي — كل النسخ تروح فيه",
   },
   {
     n: 2,
-    title: "أعط البوت بياناتك",
-    body: "أرسل إيميل MEGA وكلمة السر:\n/mega email@example.com كلمةالسر",
-    hint: "البوت يجرب الدخول قبل ما يحفظ شي",
+    title: "حط البيانات في Render",
+    body: "في Render → Environment حط:\nMEGA_EMAIL\nMEGA_PASSWORD\nMEGA_RECOVERY_KEY",
+    hint: "Render يعيد النشر تلقائيًا بعد الحفظ",
   },
   {
     n: 3,
     title: "تأكد إن الدخول نجح",
-    body: "اكتب:\n/mega test\nالبوت يحاول يدخل حسابك",
-    hint: "لو طلع خطأ — تأكد من الإيميل وكلمة السر",
+    body: "اكتب:\n/mega_test\nالبوت يحاول يدخل حسابه",
+    hint: "لو طلع خطأ — تأكد من المتغيرات",
   },
   {
     n: 4,
