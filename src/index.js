@@ -1112,7 +1112,7 @@ function registerCommands() {
   guarded("/mega", async ({ chatId, args }) => {
     const sub = (args[0] || "").toLowerCase();
     const fns = await megaStoreFns();
-    const { setMegaLink, clearMegaLink, getMegaConfig, parseFolderLink } = await megaModule();
+    const { setMegaCreds, clearMegaLink, getMegaConfig, probeMega } = await megaModule();
 
     if (sub === "off") {
       await clearMegaLink(chatId, fns);
@@ -1128,63 +1128,65 @@ function registerCommands() {
             "💾 <b>حالة MEGA</b>",
             "غير مربوط الحين.",
             "",
-            "<b>للربط (موصى به):</b>",
-            "1️⃣ افتح MEGA وأنشئ مجلد جديد (مثلاً <code>طويق-نسخ-احتياطي</code>)",
-            "2️⃣ اضغط على المجلد → <b>Get link</b>",
-            "3️⃣ أرسل الرابط هنا:",
-            "<code>/mega https://mega.nz/folder/xxx#key</code>",
+            "<b>للربط:</b>",
+            "MEGA يحتاج إيميل + كلمة سر عشان البوت يقدر يرفع في حسابك.",
+            "الرابط العادي يعطي قراءة فقط — ما يكفي.",
             "",
-            "<i>🔒 ما نخزن كلمة السر إطلاقًا — الرابط وحده يكفي، والبيانات مشفّرة بمفتاحك.</i>",
+            "اكتب:",
+            "<code>/mega email@example.com كلمةالسر</code>",
+            "",
+            "أو جرّب الشرح بالصور:",
+            "<code>/guide mega</code>",
+            "",
+            "<i>🔒 بياناتك محفوظة عندك وحدك وما تُطبع لأحد.</i>",
           ].join("\n")
         );
         return;
       }
       await sendMessage(
         chatId,
-        `💾 <b>حالة MEGA</b>\nالوضع: ${cfg.mode === "credentials" ? "حساب كامل" : "مجلد مربوط"} ✅\nالمعرف: <code>${
-          parseFolderLink(cfg.url)?.id || "—"
-        }</code>\nمنذ: ${cfg.addedAt ? new Date(cfg.addedAt).toLocaleString("ar-SA") : "—"}`
+        `💾 <b>حالة MEGA</b>\nالوضع: مربوط ✅\nالإيميل: <code>${esc(cfg.email)}</code>\nمنذ: ${
+          cfg.addedAt ? new Date(cfg.addedAt).toLocaleString("ar-SA") : "—"
+        }`
       );
       return;
     }
     if (sub === "test") {
       const cfg = await getMegaConfig(chatId, fns);
       if (!cfg) {
-        await sendMessage(chatId, "⚠️ اربط MEGA أولًا: <code>/mega &lt;رابط&gt;</code>");
+        await sendMessage(chatId, "⚠️ اربط MEGA أولًا: <code>/mega &lt;إيميل&gt; &lt;كلمةسر&gt;</code>");
         return;
       }
-      await sendMessage(chatId, "🧪 أجرب الكتابة في مجلدك…").catch(() => {});
-      try {
-        const { uploadSnapshot } = await megaModule();
-        const label = new Date().toISOString().slice(0, 10);
-        await uploadSnapshot({
-          cfg,
-          dateLabel: label,
-          scopeIndex: 99,
-          scopeName: "اختبار",
-          payload: { test: true, at: new Date().toISOString() },
-        });
-        await sendMessage(chatId, "✅ الكتابة نجحت! مجلدك جاهز للنسخ الاحتياطي.");
-      } catch (err) {
-        await sendMessage(chatId, `⚠️ فشل الاختبار: <code>${esc(err.message).slice(0, 150)}</code>`);
+      await sendMessage(chatId, "🧪 أجرب الدخول لحسابك…").catch(() => {});
+      const probe = await probeMega(cfg);
+      if (!probe.ok) {
+        await sendMessage(chatId, `⚠️ فشل الدخول: <code>${esc(probe.error).slice(0, 150)}</code>`);
+        return;
       }
+      await sendMessage(chatId, "✅ الدخول نجح! حسابك جاهز للنسخ الاحتياطي.");
       return;
     }
-    // Anything else is treated as a link to bind.
-    const url = (args[0] || "").trim();
-    if (!url.startsWith("http")) {
-      await sendMessage(chatId, "⚠️ استخدم: <code>/mega &lt;رابط&gt;</code> أو <code>/mega status</code>");
-      return;
-    }
-    try {
-      await setMegaLink(chatId, url, fns);
+    // Anything else is treated as email + password.
+    const email = (args[0] || "").trim();
+    const password = (args[1] || "").trim();
+    if (!email || !password) {
       await sendMessage(
         chatId,
-        "✅ <b>تم ربط MEGA</b>\nالنسخة الاحتياطية الجاية راح تُحفظ في مجلدك بترتيب منظم.\n\n<i>جرّب: <code>/mega test</code></i>"
+        "⚠️ استخدم: <code>/mega &lt;إيميل&gt; &lt;كلمةسر&gt;</code>\nأو <code>/mega status</code>"
       );
-    } catch (err) {
-      await sendMessage(chatId, `⚠️ الرابط غير صالح: <code>${esc(err.message).slice(0, 120)}</code>`);
+      return;
     }
+    // Verify the login before saving anything, so a typo never gets stored.
+    const probe = await probeMega({ email, password });
+    if (!probe.ok) {
+      await sendMessage(chatId, `⚠️ ما قدرت أدخل: <code>${esc(probe.error).slice(0, 150)}</code>`);
+      return;
+    }
+    await setMegaCreds(chatId, email, password, fns);
+    await sendMessage(
+      chatId,
+      "✅ <b>تم ربط MEGA</b>\nالنسخة الاحتياطية الجاية راح تُحفظ في حسابك بمجلد <code>طويق-نسخ-احتياطي</code>.\n\n<i>جرّب: <code>/mega test</code></i>"
+    );
   });
 
   // The callback behind the MEGA button on the backup panel, so the student
@@ -1195,9 +1197,15 @@ function registerCommands() {
       chatId,
       [
         "💾 <b>ربط MEGA</b>",
-        "1️⃣ أنشئ مجلد في MEGA",
-        "2️⃣ اضغط عليه → <b>Get link</b>",
-        "3️⃣ أرسل الرابط: <code>/mega https://mega.nz/folder/xxx#key</code>",
+        "MEGA ما يسمح بالرفع عن طريق الرابط — الرابط يعطي قراءة فقط.",
+        "لازم البوت يدخل حسابك بالإيميل وكلمة السر.",
+        "",
+        "1️⃣ افتح حسابك في MEGA",
+        "2️⃣ أرسل: <code>/mega email@example.com كلمةالسر</code>",
+        "3️⃣ جرّب: <code>/mega test</code>",
+        "",
+        "<i>🔒 البوت يجرب الدخول أولًا، وما يحفظ شي لو كان فيه خطأ.</i>",
+        "<i>📚 شرح بالصور: <code>/guide mega</code></i>",
       ].join("\n")
     );
   });
@@ -1521,7 +1529,7 @@ const HELP_TEXT = `<b>🤖 أوامر بوت طويق</b>
 
 <b>☁️ MEGA (اختياري — نسخة شخصية):</b>
 /guide — 📚 <b>شرح MEGA بالصور خطوة بخطوة</b>
-/mega &lt;رابط&gt; — ربط مجلد MEGA الخاص بك
+/mega &lt;إيميل&gt; &lt;كلمةسر&gt; — ربط حسابك في MEGA
 /mega status — حالة الاتصال
 /mega test — تجربة الكتابة في مجلدك
 /mega off — فصل MEGA

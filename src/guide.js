@@ -83,30 +83,33 @@ function esc(s) {
 
 // The MEGA setup walk-through. Each entry is one image the bot sends in
 // order, so the student reads it like a slideshow.
+//
+// MEGA does not allow uploads through a shared link — a link grants
+// read-only access, which is why the bot logs into the account instead.
 const MEGA_STEPS = [
   {
     n: 1,
-    title: "افتح MEGA وأنشئ مجلد",
-    body: "افتح حسابك في MEGA\nواضغط New Folder\nوسمّه: طويق-نسخ-احتياطي",
-    hint: "المجلد يكون فارغ — البوت يسوي الباقي",
+    title: "افتح حسابك في MEGA",
+    body: "ادخل على حسابك في MEGA\nمن المتصفح أو التطبيق",
+    hint: "لازم يكون عندك حساب — البوت يرفع داخله",
   },
   {
     n: 2,
-    title: "شارك المجلد برابط",
-    body: "اضغط بزر الفأرة على المجلد\nاختر Get Link\nانسخ الرابط",
-    hint: "تأكد إن الصلاحية: Read and write",
+    title: "أعط البوت بياناتك",
+    body: "أرسل إيميل MEGA وكلمة السر:\n/mega email@example.com كلمةالسر",
+    hint: "البوت يجرب الدخول قبل ما يحفظ شي",
   },
   {
     n: 3,
-    title: "أرسل الرابط للبوت",
-    body: "انسخ الرابط ورسله هنا:\n/mega https://mega.nz/folder/xxx#key",
-    hint: "البوت يحفظ الرابط بس — ما يخزن كلمة سرك",
+    title: "تأكد إن الدخول نجح",
+    body: "اكتب:\n/mega test\nالبوت يحاول يدخل حسابك",
+    hint: "لو طلع خطأ — تأكد من الإيميل وكلمة السر",
   },
   {
     n: 4,
-    title: "جرّب الكتابة",
-    body: "اكتب:\n/mega test\nالبوت يرفع ملف تجريبي ويتأكد",
-    hint: "بعدها /backup يصير يحفظ في مجلدك",
+    title: "خذ نسختك الاحتياطية",
+    body: "اكتب:\n/backup\nالبوت يحفظ كل شي في مجلد",
+    hint: "يُحفظ في: طويق-نسخ-احتياطي/التاريخ/",
   },
 ];
 
