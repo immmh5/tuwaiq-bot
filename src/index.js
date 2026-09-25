@@ -210,9 +210,8 @@ function registerCommands() {
   async function backupRows(cfg, chatId) {
     const scopes = ["backup_schedule", "backup_assignments", "backup_courses", "backup_grades", "backup_materials"];
     const formats = ["backup_format", "backup_auto"];
-    const fns = await megaStoreFns();
-    const { getMegaConfig } = await megaModule();
-    const linked = !!(await getMegaConfig(chatId, fns));
+    const { isMegaConfigured } = await megaModule();
+    const linked = isMegaConfigured();
     return [
       scopes.map((name) => ({ label: LABELS[name][String(cfg[name])], action: `set:${name}` })),
       formats.map((name) => ({ label: LABELS[name][String(cfg[name])], action: `set:${name}` })),
@@ -545,12 +544,14 @@ function registerCommands() {
   // any per-user state stay attached to the right person rather than to the
   // shared platform account.
   guarded("/phone", async ({ chatId, args }) => {
+    // Numbers arrive without a space: /phone_0501234567. The trailing part of
+    // the command itself is the number, so args is empty in that case.
     const raw = (args || []).join("").trim();
     if (!raw) {
       const phone = await getPhone(chatId);
       await sendMessage(
         chatId,
-        `📞 رقمك الحالي: <code>${escapeHtml(phone || "غير محدد")}</code>\n\n<i>تغييره: <code>/phone 050xxxxxxx</code></i>`
+        `📞 رقمك الحالي: <code>${escapeHtml(phone || "غير محدد")}</code>\n\n<i>تغييره: <code>/phone_050xxxxxxx</code>\n<i>أو بضغطة: <code>/identify</code></i>`
       );
       return;
     }
@@ -559,6 +560,14 @@ function registerCommands() {
       await sendMessage(chatId, "⚠️ رقم غير صالح — تأكد من كتابته صح.");
       return;
     }
+    await setPhone(chatId, digits);
+    await sendMessage(chatId, `✅ تم حفظ رقمك: <code>${escapeHtml(digits)}</code>`);
+  });
+
+  // /phone_<digits> — the number is part of the command token, so no space is
+  // needed and Telegram registers it as one command.
+  guarded(/^\/phone_(\d{9,15})$/, async ({ chatId, match }) => {
+    const digits = match[1];
     await setPhone(chatId, digits);
     await sendMessage(chatId, `✅ تم حفظ رقمك: <code>${escapeHtml(digits)}</code>`);
   });
@@ -605,12 +614,7 @@ function registerCommands() {
   // An illustrated walk-through for linking MEGA, sent as one image per
   // step so it reads like a slideshow. The same renderer that draws the
   // timetable draws these, so the style matches the rest of the bot.
-  guarded("/guide", async ({ chatId, args }) => {
-    const topic = (args[0] || "mega").toLowerCase();
-    if (topic !== "mega") {
-      await sendMessage(chatId, "📚 الشروحات المتوفرة الحين: <code>/guide mega</code>");
-      return;
-    }
+  guarded("/guide_mega", async ({ chatId }) => {
     const { toPng } = await import("./images.js");
     const { MEGA_STEPS, renderStep } = await import("./guide.js");
     await sendMessage(chatId, "📚 أرسلك شرح MEGA خطوة بخطوة…").catch(() => {});
@@ -636,7 +640,15 @@ function registerCommands() {
     }
     await sendMessage(
       chatId,
-      "✅ <b>خلصت الشرح</b>\n\nجرّب الحين:\n<code>/mega status</code>",
+      "✅ <b>خلصت الشرح</b>\n\nجرّب الحين:\n<code>/mega_status</code>",
+    );
+  });
+
+  // /guide still works, pointing at the MEGA guide.
+  guarded("/guide", async ({ chatId }) => {
+    await sendMessage(
+      chatId,
+      "📚 الشروحات المتوفرة الحين: <code>/guide_mega</code>",
     );
   });
 
@@ -769,7 +781,10 @@ function registerCommands() {
     await sendMessage(chatId, lines.join("\n\n"));
   });
 
-  guarded("/schedule", async ({ chatId, args }) => {
+  guarded("/schedule_today", async (ctx) => scheduleImpl(ctx, "today"));
+  guarded("/schedule", async (ctx) => scheduleImpl(ctx, ctx.args[0]));
+
+  async function scheduleImpl({ chatId }, arg) {
     if (!(await requireLogin(chatId))) return;
     const tokens = await getTokens();
     const items = await fetchScope("schedule", tokens.accessToken);
@@ -786,7 +801,7 @@ function registerCommands() {
     }
     const today = new Date().toISOString().slice(0, 10);
     const days = [...byDay.keys()].sort();
-    const onlyToday = args[0] === "today";
+    const onlyToday = arg === "today";
     const shown = onlyToday ? days.filter((d) => d === today) : days;
     const lines = ["<b>🗓 الجدول الأسبوعي</b>"];
     for (const day of shown) {
@@ -800,7 +815,7 @@ function registerCommands() {
       }
     }
     await sendMessage(chatId, lines.join("\n"));
-  });
+  }
 
   guarded("/attendance", async ({ chatId }) => {
     if (!(await requireLogin(chatId))) return;
@@ -966,11 +981,11 @@ function registerCommands() {
     };
     const totalCount = { ok: 0, fail: 0 };
     // If the student linked a MEGA folder, the same data is written there as
-    // structured JSON, one file per scope under a dated folder. Without a
-    // linked folder this whole step is skipped and the backup stays local.
-    const fns = await megaStoreFns();
+    // structured JSON, one file per scope under a dated folder. Without MEGA
+    // configured in the environment this whole step is skipped and the
+    // backup stays in Telegram.
     const { getMegaConfig, uploadSnapshot, uploadIndex } = await megaModule();
-    const megaCfg = await getMegaConfig(chatId, fns);
+    const megaCfg = getMegaConfig();
     const dateLabel = new Date().toISOString().slice(0, 10);
     const snapshot = [];
 
@@ -1104,90 +1119,81 @@ function registerCommands() {
   async function megaModule() {
     return import("./mega.js");
   }
-  async function megaStoreFns() {
-    const { setUserKv, getUserKv } = await import("./store.js");
-    return { setUserKv, getUserKv };
+
+  // A sub-command dispatcher: /mega_status and /mega_test call the same
+  // /mega implementation with the argument already chosen, so the space in
+  // "/mega status" is never needed.
+  async function megaSub(ctx, sub) {
+    return megaImpl(ctx, sub);
   }
 
-  guarded("/mega", async ({ chatId, args }) => {
-    const sub = (args[0] || "").toLowerCase();
-    const fns = await megaStoreFns();
-    const { setMegaCreds, clearMegaLink, getMegaConfig, probeMega } = await megaModule();
+  guarded("/mega", async (ctx) => megaImpl(ctx, (ctx.args[0] || "").toLowerCase()));
+
+  async function megaImpl({ chatId }, sub) {
+    const { getMegaConfig, probeMega, isMegaConfigured } = await megaModule();
 
     if (sub === "off") {
-      await clearMegaLink(chatId, fns);
-      await sendMessage(chatId, "🔌 تم فصل MEGA. نسخك السابقة تبقى في حسابك طبعًا.");
+      await sendMessage(
+        chatId,
+        "🔒 MEGA مربوط بمتغيرات البيئة في Render — ما يُفصل من هنا.\n<i>احذف MEGA_EMAIL و MEGA_PASSWORD من Render عشان توقفه.</i>"
+      );
       return;
     }
     if (sub === "status" || !sub) {
-      const cfg = await getMegaConfig(chatId, fns);
-      if (!cfg) {
+      if (!isMegaConfigured()) {
         await sendMessage(
           chatId,
           [
             "💾 <b>حالة MEGA</b>",
-            "غير مربوط الحين.",
+            "غير مُعد الحين.",
             "",
-            "<b>للربط:</b>",
-            "MEGA يحتاج إيميل + كلمة سر عشان البوت يقدر يرفع في حسابك.",
-            "الرابط العادي يعطي قراءة فقط — ما يكفي.",
+            "MEGA يُربط من متغيرات البيئة في Render:",
+            "<code>MEGA_EMAIL</code> — إيميل حساب MEGA",
+            "<code>MEGA_PASSWORD</code> — كلمة السر",
+            "<code>MEGA_RECOVERY_KEY</code> — مفتاح الاستعادة (اختياري)",
             "",
-            "اكتب:",
-            "<code>/mega email@example.com كلمةالسر</code>",
-            "",
-            "أو جرّب الشرح بالصور:",
-            "<code>/guide mega</code>",
-            "",
-            "<i>🔒 بياناتك محفوظة عندك وحدك وما تُطبع لأحد.</i>",
+            "<i>📚 شرح بالصور: <code>/guide_mega</code></i>",
           ].join("\n")
         );
         return;
       }
+      const cfg = getMegaConfig();
       await sendMessage(
         chatId,
-        `💾 <b>حالة MEGA</b>\nالوضع: مربوط ✅\nالإيميل: <code>${esc(cfg.email)}</code>\nمنذ: ${
-          cfg.addedAt ? new Date(cfg.addedAt).toLocaleString("ar-SA") : "—"
+        `💾 <b>حالة MEGA</b>\nالوضع: مربوط ✅\nالإيميل: <code>${esc(cfg.email)}</code>\nمفتاح الاستعادة: ${
+          cfg.recoveryKey ? "موجود ✅" : "غير محدد"
         }`
       );
       return;
     }
     if (sub === "test") {
-      const cfg = await getMegaConfig(chatId, fns);
-      if (!cfg) {
-        await sendMessage(chatId, "⚠️ اربط MEGA أولًا: <code>/mega &lt;إيميل&gt; &lt;كلمةسر&gt;</code>");
-        return;
-      }
-      await sendMessage(chatId, "🧪 أجرب الدخول لحسابك…").catch(() => {});
-      const probe = await probeMega(cfg);
+      await sendMessage(chatId, "🧪 أجرب الدخول لحساب MEGA…").catch(() => {});
+      const probe = await probeMega();
       if (!probe.ok) {
         await sendMessage(chatId, `⚠️ فشل الدخول: <code>${esc(probe.error).slice(0, 150)}</code>`);
         return;
       }
-      await sendMessage(chatId, "✅ الدخول نجح! حسابك جاهز للنسخ الاحتياطي.");
+      await sendMessage(chatId, "✅ الدخول نجح! الحساب جاهز للنسخ الاحتياطي.");
       return;
     }
-    // Anything else is treated as email + password.
-    const email = (args[0] || "").trim();
-    const password = (args[1] || "").trim();
-    if (!email || !password) {
-      await sendMessage(
-        chatId,
-        "⚠️ استخدم: <code>/mega &lt;إيميل&gt; &lt;كلمةسر&gt;</code>\nأو <code>/mega status</code>"
-      );
-      return;
-    }
-    // Verify the login before saving anything, so a typo never gets stored.
-    const probe = await probeMega({ email, password });
-    if (!probe.ok) {
-      await sendMessage(chatId, `⚠️ ما قدرت أدخل: <code>${esc(probe.error).slice(0, 150)}</code>`);
-      return;
-    }
-    await setMegaCreds(chatId, email, password, fns);
     await sendMessage(
       chatId,
-      "✅ <b>تم ربط MEGA</b>\nالنسخة الاحتياطية الجاية راح تُحفظ في حسابك بمجلد <code>طويق-نسخ-احتياطي</code>.\n\n<i>جرّب: <code>/mega test</code></i>"
+      [
+        "💾 <b>أوامر MEGA</b>",
+        "/mega_status — الحالة",
+        "/mega_test — تجربة الدخول",
+        "",
+        "<i>الربط يتم من متغيرات البيئة في Render.</i>",
+      ].join("\n")
     );
-  });
+  }
+
+  // Explicit sub-commands so no command ever needs a space — Telegram would
+  // treat "/mega test" as a command plus an argument, and the student wants
+  // a single token for everything. Each one re-runs /mega with the argument
+  // baked in, so there is one implementation of the MEGA logic.
+  guarded("/mega_status", async (ctx) => megaSub(ctx, "status"));
+  guarded("/mega_test", async (ctx) => megaSub(ctx, "test"));
 
   // The callback behind the MEGA button on the backup panel, so the student
   // can reach the link flow without typing the command.
@@ -1202,10 +1208,10 @@ function registerCommands() {
         "",
         "1️⃣ افتح حسابك في MEGA",
         "2️⃣ أرسل: <code>/mega email@example.com كلمةالسر</code>",
-        "3️⃣ جرّب: <code>/mega test</code>",
+        "3️⃣ جرّب: <code>/mega_test</code>",
         "",
-        "<i>🔒 البوت يجرب الدخول أولًا، وما يحفظ شي لو كان فيه خطأ.</i>",
-        "<i>📚 شرح بالصور: <code>/guide mega</code></i>",
+        "<i>🔒 الربط يتم من متغيرات البيئة في Render — ما تُرسل بالأوامر.</i>",
+        "<i>📚 شرح بالصور: <code>/guide_mega</code></i>",
       ].join("\n")
     );
   });
@@ -1527,16 +1533,15 @@ const HELP_TEXT = `<b>🤖 أوامر بوت طويق</b>
 /settings — ⚙️ لوحة الإعدادات (أزرار)
 /backupcfg — 🆕 <b>إعدادات النسخة الاحتياطية</b> (أزرار)
 
-<b>☁️ MEGA (اختياري — نسخة شخصية):</b>
-/guide — 📚 <b>شرح MEGA بالصور خطوة بخطوة</b>
-/mega &lt;إيميل&gt; &lt;كلمةسر&gt; — ربط حسابك في MEGA
-/mega status — حالة الاتصال
-/mega test — تجربة الكتابة في مجلدك
-/mega off — فصل MEGA
+<b>☁️ MEGA (نسخ احتياطي سحابي):</b>
+/guide_mega — 📚 <b>شرح MEGA بالصور خطوة بخطوة</b>
+/mega_status — حالة الاتصال
+/mega_test — تجربة الدخول
+<i>الربط من متغيرات البيئة: MEGA_EMAIL و MEGA_PASSWORD</i>
 
 <b>👤 الحساب:</b>
 /identify — 🆕 <b>عرّف البوت بنفسك</b> (زر مشاركة الرقم)
-/phone 050xxxxxxx — حفظ أو تغيير رقمك
+/phone_050xxxxxxx — حفظ أو تغيير رقمك
 /who — رقمك، دورك، وحالة MEGA
 /watch assignments on|off — تشغيل/إيقاف مراقبة نطاق
 /interval 15 — تغيير دقيقة الفحص

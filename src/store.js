@@ -130,12 +130,24 @@ export async function getKv(key, fallback = null) {
 }
 
 // --- credentials --------------------------------------------------------------
+// The Tuwaiq account lives in the environment as TUWAIQ_USERNAME /
+// TUWAIQ_PASSWORD — the bot owns the account outright, so there is no
+// per-user binding and no credentials in the database to leak. Anything
+// previously stored is migrated to the same shape on read.
 
+// Fallback for accounts linked before the move to environment credentials.
 export async function saveCredentials(username, password) {
   await setKv("credentials", { username, password });
 }
 
 export async function getCredentials() {
+  if (process.env.TUWAIQ_USERNAME && process.env.TUWAIQ_PASSWORD) {
+    return {
+      username: process.env.TUWAIQ_USERNAME,
+      password: process.env.TUWAIQ_PASSWORD,
+      source: "env",
+    };
+  }
   return getKv("credentials", null);
 }
 

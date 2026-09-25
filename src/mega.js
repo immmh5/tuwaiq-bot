@@ -1,54 +1,45 @@
-// src/mega.js — optional personal backup destination (MEGA)
+// src/mega.js — MEGA backup destination for the bot's own account
 //
-// The bot uploads into the student's own MEGA account by logging in with
-// their email and password. Folder links cannot work for this: a shared
-// link grants read-only access, so the bot would be unable to write.
+// The bot owns its MEGA account outright. Credentials come from the
+// environment (MEGA_EMAIL / MEGA_PASSWORD / MEGA_RECOVERY_KEY), so nothing
+// is stored in the database and no per-user binding is needed.
 //
-// Credentials are stored per user and never printed back. The upload itself
-// goes to a dedicated dated folder so it never touches the rest of the
-// account's tree.
+// Uploads go to a dedicated dated folder, so the account stays organised
+// and nothing else in it is touched.
 
 import { Storage } from "megajs";
 
-// Credentials are kept per user. They are the student's own MEGA login —
-// the bot needs them to write into the account, and they are never echoed
-// back through any command.
-export async function setMegaCreds(telegramId, email, password, { setUserKv }) {
-  await setUserKv(telegramId, "mega", {
-    mode: "credentials",
+// The bot's MEGA account, read straight from the environment.
+export function getMegaConfig() {
+  const email = process.env.MEGA_EMAIL;
+  const password = process.env.MEGA_PASSWORD;
+  if (!email || !password) return null;
+  return {
     email,
     password,
-    addedAt: Date.now(),
-  });
-  return { ok: true };
+    recoveryKey: process.env.MEGA_RECOVERY_KEY || null,
+    source: "env",
+  };
 }
 
-export async function getMegaConfig(telegramId, { getUserKv }) {
-  const cfg = await getUserKv(telegramId, "mega", null);
-  if (!cfg || cfg.mode !== "credentials") return null;
-  return cfg;
-}
-
-export async function clearMegaLink(telegramId, { setUserKv }) {
-  await setUserKv(telegramId, "mega", null);
+// True when MEGA is configured at all, used to decide whether the backup
+// should attempt the cloud leg.
+export function isMegaConfigured() {
+  return !!getMegaConfig();
 }
 
 // Try to log in and touch the account. This is the only reliable proof the
 // credentials work — anything less and a backup fails at the worst moment.
-export async function probeMega(cfg) {
-  if (!cfg?.email || !cfg?.password) return { ok: false, error: "بيانات ناقصة" };
+export async function probeMega(cfg = getMegaConfig()) {
+  if (!cfg?.email || !cfg?.password) return { ok: false, error: "MEGA غير مُعد في متغيرات البيئة" };
   try {
-    const storage = Storage({
-      email: cfg.email,
-      password: cfg.password,
-      autoload: false,
-    });
+    const storage = openStorage(cfg);
     await ready(storage);
     await storage.loadAttributes();
     const root = storage.root;
     if (!root) return { ok: false, error: "ما قدرت أوصل لجذور الحساب" };
     storage.close();
-    return { ok: true };
+    return { ok: true, email: cfg.email };
   } catch (err) {
     return { ok: false, error: err.message || "فشل الدخول" };
   }
@@ -86,7 +77,8 @@ const ROOT_FOLDER = "طويق-نسخ-احتياطي";
 //       فهرس.json
 //
 // Numbers keep the scopes in a stable order regardless of the viewer's sort.
-export async function uploadSnapshot({ cfg, dateLabel, scopeIndex, scopeName, payload }) {
+export async function uploadSnapshot({ cfg = getMegaConfig(), dateLabel, scopeIndex, scopeName, payload }) {
+  if (!cfg) throw new Error("MEGA غير مُعد");
   const storage = openStorage(cfg);
   await ready(storage);
   await storage.loadAttributes();
@@ -101,7 +93,8 @@ export async function uploadSnapshot({ cfg, dateLabel, scopeIndex, scopeName, pa
 
 // The index file lists every scope in the snapshot with its fetch time, so
 // the folder is self-describing rather than a pile of opaque JSON.
-export async function uploadIndex({ cfg, dateLabel, entries }) {
+export async function uploadIndex({ cfg = getMegaConfig(), dateLabel, entries }) {
+  if (!cfg) throw new Error("MEGA غير مُعد");
   const storage = openStorage(cfg);
   await ready(storage);
   await storage.loadAttributes();

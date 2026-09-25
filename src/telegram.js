@@ -49,6 +49,20 @@ export function getHandler(command) {
   return handlers.get(command);
 }
 
+// Resolve the handler for a command token, including regex-registered
+// commands like /phone_0501234567. Returns { fn, match } or null.
+export function resolveHandler(key) {
+  const exact = handlers.get(key);
+  if (exact) return { fn: exact, match: null };
+  for (const [pattern, fn] of handlers.entries()) {
+    if (pattern instanceof RegExp) {
+      const m = key.match(pattern);
+      if (m) return { fn, match: m };
+    }
+  }
+  return null;
+}
+
 export async function sendMessage(chatId, text, extra = {}) {
   if (!token) throw new Error("TELEGRAM_BOT_TOKEN not set");
   const body = {
@@ -257,9 +271,13 @@ function handleMessage(update) {
   const [cmd, ...args] = text.split(/\s+/);
   const key = cmd.toLowerCase().replace(/@.+$/, "");
 
-  const fn = handlers.get(key);
-  if (fn) {
-    Promise.resolve(fn({ chatId, args, text, raw: msg })).catch((err) => {
+  // Regex commands (/phone_0501234567) resolve through the matcher; plain
+  // commands still take the fast exact path.
+  const resolved = resolveHandler(key);
+  if (resolved) {
+    Promise.resolve(
+      resolved.fn({ chatId, args, text, raw: msg, match: resolved.match }),
+    ).catch((err) => {
       sendMessage(chatId, `⚠️ خطأ: <code>${escapeHtml(err.message)}</code>`).catch(() => {});
     });
   } else if (key === "/start") {
