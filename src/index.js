@@ -213,8 +213,9 @@ function registerCommands() {
     const { isMegaConfigured } = await megaModule();
     const linked = isMegaConfigured();
     return [
-      scopes.map((name) => ({ label: LABELS[name][String(cfg[name])], action: `set:${name}` })),
-      formats.map((name) => ({ label: LABELS[name][String(cfg[name])], action: `set:${name}` })),
+      // The backup panel re-renders its own page, so the section is backup.
+      scopes.map((name) => ({ label: LABELS[name][String(cfg[name])], action: `set_backup:${name}` })),
+      formats.map((name) => ({ label: LABELS[name][String(cfg[name])], action: `set_backup:${name}` })),
       [
         { label: linked ? "✅ MEGA مربوط" : "🔗 ربط MEGA", action: "mega_help" },
         { label: "💾 نفّذ نسخة الحين", action: "run_backup" },
@@ -236,44 +237,57 @@ function registerCommands() {
     if (fn) await fn({ chatId, args: "", text: "/backup" }).catch(() => {});
   });
 
-  async function settingsText(cfg, chatId) {
-    const lines = ["<b>⚙️ الإعدادات</b>", ""];
-    for (const sec of PANEL) {
-      lines.push(`<b>${sec.title}</b>`);
+  // The main settings page is a category picker — one button per section —
+  // rather than every toggle at once. Tapping one opens a second page
+  // holding just that section's toggles, so the panel never grows past one
+  // screen no matter how many settings exist.
+  async function settingsText(cfg, chatId, section) {
+    if (section) {
+      const sec = PANEL.find((s) => s.key === section);
+      if (!sec) return "<b>⚙️ الإعدادات</b>";
+      const lines = [`<b>${sec.title}</b>`, ""];
       for (const name of sec.items) {
         lines.push(`${SETTING_HINTS[name] || name}: ${LABELS[name][String(cfg[name])] || cfg[name]}`);
       }
       lines.push("");
+      lines.push("<i>اضغط أي زر عشان تغيره — التغيير فوري.</i>");
+      return lines.join("\n");
     }
-    // The access switch is shown only to the owner. A guest never sees it,
-    // let alone flips it — that is the whole point of the private mode.
+    const lines = ["<b>⚙️ الإعدادات</b>", "", "اختر القسم اللي تبي تعدّله:"];
     if (chatId && (await isOwnerOfStore(chatId))) {
-      lines.push("<b>🔒 الوصول</b>");
-      lines.push(
-        `الوضع: ${botMode() === "public" ? "عام — الضيوف مسموحين" : "خاص — أنت فقط"}`
-      );
       lines.push("");
+      lines.push("🔒 <b>الوصول</b>");
+      lines.push(`الوضع: ${botMode() === "public" ? "عام — الضيوف مسموحين" : "خاص — أنت فقط"}`);
     }
-    lines.push("<i>اضغط أي زر عشان تغيره — التغيير فوري.</i>");
     return lines.join("\n");
   }
 
-  async function settingsRows(cfg, chatId) {
-    // One row per section so the buttons stay under their heading and no
-    // row is wider than the phone screen.
-    const rows = PANEL.map((sec) =>
-      sec.items.map((name) => ({
+  async function settingsRows(cfg, chatId, section) {
+    if (section) {
+      // A sub-page shows one section's toggles plus a way back. Two buttons
+      // a row keeps it readable on a phone.
+      const sec = PANEL.find((s) => s.key === section);
+      if (!sec) return [[{ label: "🔙 رجوع", action: "settings:" }]];
+      const items = sec.items.map((name) => ({
         label: LABELS[name][String(cfg[name])] || String(cfg[name]),
-        action: `set:${name}`,
-      }))
-    );
-    // The owner's switch sits below the settings, not among them, so a guest
-    // browsing the same panel never gets the button either.
+        action: `set_${section}:${name}`,
+      }));
+      const rows = [];
+      for (let i = 0; i < items.length; i += 2) rows.push(items.slice(i, i + 2));
+      rows.push([{ label: "🔙 رجوع للإعدادات", action: "settings:" }]);
+      return rows;
+    }
+    // Main page: one button per category.
+    const rows = PANEL.map((sec) => [
+      {
+        label: sec.title,
+        action: `settings:${sec.key}`,
+      },
+    ]);
     if (chatId && (await isOwnerOfStore(chatId))) {
       rows.push([
         {
-          label:
-            botMode() === "public" ? "🔒 خاص (أنا فقط)" : "🌐 عام (سماح للضيوف)",
+          label: botMode() === "public" ? "🔒 خاص (أنا فقط)" : "🌐 عام (سماح للضيوف)",
           action: "mode:flip",
         },
       ]);
@@ -312,10 +326,10 @@ function registerCommands() {
     }
   });
 
-  // A button press. The action carries the setting name; the handler cycles
-  // to the next allowed value and rewrites the panel. Some settings also
-  // have an immediate runtime effect, so those are applied right here.
-  onCallback("set", async ({ chatId, messageId, arg, queryId }) => {
+  // A toggle press. The action is "set_<section>:<name>" — the section is
+  // encoded in the action so the panel re-renders the same sub-page instead
+  // of jumping back to the category list.
+  onCallback("set", async ({ chatId, messageId, arg, queryId, action }) => {
     if (!SETTING_NAMES.includes(arg)) {
       await answerCallbackQuery(queryId, "❓ إعداد غير معروف");
       return;
@@ -329,8 +343,29 @@ function registerCommands() {
         await restartWatcher();
       } catch {}
     }
-    await editMessage(messageId, chatId, (await settingsText(cfg, chatId)), (await settingsRows(cfg, chatId)));
+    // "set_<section>:<name>" — the prefix says which sub-page to redraw.
+    const section = action?.startsWith("set_") ? action.slice("set_".length) : null;
+    // The backup panel is its own message with its own layout, so a toggle
+    // there redraws that panel rather than the settings sub-page.
+    if (section === "backup") {
+      await editMessage(messageId, chatId, await backupPanelText(cfg), await backupRows(cfg, chatId));
+    } else {
+      await editMessage(messageId, chatId, (await settingsText(cfg, chatId, section)), (await settingsRows(cfg, chatId, section)));
+    }
     await answerCallbackQuery(queryId, `✅ ${LABELS[arg][String(cfg[arg])]}`);
+  });
+
+  // Category navigation: the main page opens a sub-page for one section, and
+  // the empty section returns to the main page.
+  onCallback("settings", async ({ chatId, messageId, arg, queryId }) => {
+    const cfg = await getSettings(chatId);
+    const section = arg || null;
+    if (section && !PANEL.some((s) => s.key === section)) {
+      await answerCallbackQuery(queryId, "❓ قسم غير معروف");
+      return;
+    }
+    await editMessage(messageId, chatId, (await settingsText(cfg, chatId, section)), (await settingsRows(cfg, chatId, section)));
+    await answerCallbackQuery(queryId, "");
   });
 
   onCallback("close", async ({ chatId, messageId, queryId }) => {
@@ -1119,27 +1154,35 @@ function registerCommands() {
   // button machinery as /settings, its own message so the two stay separate.
   guarded("/backupcfg", async ({ chatId }) => {
     const cfg = await getSettings(chatId);
-    await sendButtons(
-      chatId,
-      [
-        "<b>💾 إعدادات النسخة الاحتياطية</b>",
-        "",
-        "<b>النطاقات</b>",
-        `الجدول: ${cfg.backup_schedule === false ? "متوقف" : "شغال"}`,
-        `الواجبات: ${cfg.backup_assignments === false ? "متوقف" : "شغال"}`,
-        `المقررات: ${cfg.backup_courses === false ? "متوقف" : "شغال"}`,
-        `الدرجات: ${cfg.backup_grades === false ? "متوقف" : "شغال"}`,
-        `المواد: ${cfg.backup_materials === false ? "متوقف" : "شغال"}`,
-        "",
-        "<b>الشكل</b>",
-        `الطريقة: ${LABELS.backup_format[String(cfg.backup_format)]}`,
-        `التلقائي: ${cfg.backup_auto === false ? "متوقف" : "شغال"}`,
-        "",
-        "<i>اضغط أي زر عشان تغيره — التغيير فوري.</i>",
-      ].join("\n"),
-      await backupRows(cfg, chatId)
-    );
+    await sendBackupPanel(chatId, cfg);
   });
+
+  // The backup panel is its own message, redrawn in place after each toggle
+  // so the student watches the values move. It reuses the settings sub-page
+  // mechanism with the "backup" section.
+  async function sendBackupPanel(chatId, cfg) {
+    await sendButtons(chatId, await backupPanelText(cfg), await backupRows(cfg, chatId));
+  }
+
+  async function backupPanelText(cfg) {
+    return [
+      "<b>💾 إعدادات النسخة الاحتياطية</b>",
+      "",
+      "<b>النطاقات</b>",
+      `الجدول: ${cfg.backup_schedule === false ? "متوقف" : "شغال"}`,
+      `الواجبات: ${cfg.backup_assignments === false ? "متوقف" : "شغال"}`,
+      `المقررات: ${cfg.backup_courses === false ? "متوقف" : "شغال"}`,
+      `الدرجات: ${cfg.backup_grades === false ? "متوقف" : "شغال"}`,
+      `المواد: ${cfg.backup_materials === false ? "متوقف" : "شغال"}`,
+      "",
+      "<b>الشكل</b>",
+      `الطريقة: ${LABELS.backup_format[String(cfg.backup_format)]}`,
+      `التلقائي: ${cfg.backup_auto === false ? "متوقف" : "شغال"}`,
+      `MEGA: ${cfg.mega_enabled === false ? "متوقف" : "شغال"}`,
+      "",
+      "<i>اضغط أي زر عشان تغيره — التغيير فوري.</i>",
+    ].join("\n");
+  }
 
   guarded("/help", async ({ chatId }) => {
     await sendMessage(chatId, HELP_TEXT);
@@ -1317,23 +1360,27 @@ function registerCommands() {
   // Stored in reminders_config so it survives restarts.
   // Telegram commands can't contain spaces, so multi-word scopes are joined
   // with an underscore — they register cleanly and show as one command.
+  // Every image command starts with /img_ so they group together in the
+  // command menu. /img_grid is the API-driven week view; /img_site is the
+  // table exactly as the platform draws it and the one the schedule
+  // commands point at. The old /img_schedule is gone — one schedule image
+  // command is enough, and the site-faithful one is it.
   guarded("/img_grid", async (ctx) => onImg(ctx, "grid"));
-  guarded("/img_schedule", async (ctx) => onImg(ctx, "schedule"));
   guarded("/img_assignments", async (ctx) => onImg(ctx, "assignments"));
   guarded("/img_grades", async (ctx) => onImg(ctx, "grades"));
+  guarded("/img_site", async (ctx) => siteImpl(ctx, "schedule"));
 
-  // The table exactly as the site shows it. The web page needs a Keycloak
-  // browser session (the bearer token is not enough), so this establishes
-  // one from the /login chain, then reads the real /student/schedule HTML
-  // and redraws it in the platform's own palette. If the session cannot be
-  // established it falls back to the API-driven grid rather than failing.
+  // Legacy spellings still answer, so an existing habit does not break, but
+  // they redirect to the single schedule image rather than rendering a
+  // second, less faithful version of the same table.
+  guarded("/img_schedule", async (ctx) => siteImpl(ctx, "schedule"));
   guarded("/site_schedule", async (ctx) => siteImpl(ctx, "schedule"));
   guarded("/site", async (ctx) => siteImpl(ctx, String(ctx.args[0] || "schedule")));
 
   async function siteImpl({ chatId }, scope) {
     if (!(await requireLogin(chatId))) return;
     if (scope !== "schedule") {
-      await sendMessage(chatId, "📸 الحين يدعم: <code>/site_schedule</code>");
+      await sendMessage(chatId, "📸 الحين يدعم: <code>/img_site</code>");
       return;
     }
     const tokens = await getTokens();
@@ -1453,7 +1500,11 @@ function registerCommands() {
 
   // Send a rendered PNG image of a scope — schedule, assignments or grades.
   guarded("/img", async ({ chatId, args }) => {
-    const scope = args[0] || "schedule";
+    // "schedule" is not a scope here anymore — /img_site is the one schedule
+    // image, so a bare /img points at it rather than rendering a second
+    // version of the same table.
+    const scope = args[0] || "site";
+    if (scope === "schedule") return siteImpl({ chatId }, "schedule");
     await onImg({ chatId }, scope);
   });
 
@@ -1462,13 +1513,11 @@ function registerCommands() {
   // Shared by /img <scope> and the /img_<scope> shortcuts.
   async function onImg({ chatId }, scope) {
     if (!(await requireLogin(chatId))) return;
-    const valid = ["schedule", "assignments", "grades", "grid"];
+    const valid = ["assignments", "grades", "grid"];
     if (!valid.includes(scope)) {
       await sendMessage(
         chatId,
-        "🖼 <b>صورة</b>\n\nالاستعمال: <code>/img &lt;نطاق&gt;</code>\n\n<code>" +
-          valid.join("</code> · <code>") +
-          "</code>\n\n<i>/img_schedule — الجدول كصورة مرتبة\n/img_grid — شبكة الأيام والأوقات\nأو بكلمة: /img schedule</i>"
+        "🖼 <b>الصور</b>\n\n<code>/img_site</code> — الجدول مثل ما يظهر في المنصة بالضبط\n<code>/img_grid</code> — شبكة الأيام والأوقات\n<code>/img_assignments</code> — الواجبات\n<code>/img_grades</code> — الدرجات"
       );
       return;
     }
@@ -1476,7 +1525,6 @@ function registerCommands() {
     // Human-readable labels so every step announces itself — the student
     // should never watch the bot go quiet while it fetches and renders.
     const STEP = {
-      schedule: "🗓 أجيب جدولك وأرسمه…",
       grid: "🗓 أبني شبكة الجدول…",
       assignments: "📚 أجيب واجباتك وأرسمها…",
       grades: "📊 أجيب درجاتك وأرسمها…",
@@ -1587,12 +1635,11 @@ const HELP_TEXT = `<b>🤖 أوامر بوت طويق</b>
 /due — الواجبات المستحقة خلال ٢٤ ساعة
 /download_12 — تحميل مادة برقمها
 
-<b>📸 الصور:</b>
-/img_schedule — الجدول كصورة مرتبة
+<b>📸 الصور (كلها /img_):</b>
+/img_site — <b>الجدول مثل المنصة بالضبط</b>
 /img_grid — الجدول بشبكة الأيام والأوقات
 /img_assignments — الواجبات كصورة
 /img_grades — الدرجات كصورة
-/site_schedule — صورة الجدول مثل المنصة بالضبط
 
 <b>⏰ التنبيهات:</b>
 /remind_on — تنبيه "باقيلك بس يوم"

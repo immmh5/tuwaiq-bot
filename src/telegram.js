@@ -463,11 +463,13 @@ function handleCallback(update) {
     return;
   }
 
-  // callback_data carries an optional argument: "action:value".
+  // callback_data carries an optional argument: "action:value". The action
+  // itself may carry a section after an underscore ("set_backup:name") so a
+  // sub-page can re-render itself, so the raw action is handed through too.
   const [action, ...rest] = data.split(":");
-  const fn = callbackHandlers.get(action);
+  const fn = callbackHandlers.get(action.startsWith("set_") ? "set" : action);
   if (fn) {
-    Promise.resolve(fn({ chatId, messageId, arg: rest.join(":"), queryId: cq.id }))
+    Promise.resolve(fn({ chatId, messageId, arg: rest.join(":"), queryId: cq.id, action }))
       .catch((err) => {
         answerCallbackQuery(cq.id, "⚠️ " + String(err.message).slice(0, 180)).catch(() => {});
       });

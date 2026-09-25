@@ -150,22 +150,27 @@ export async function cycleSetting(chatId, name) {
 export const SETTING_NAMES = Object.keys(DEFAULTS);
 
 // Panel sections: each groups related settings so the buttons read as one
-// subject per block rather than a flat list.
+// subject per block rather than a flat list. The key is what the category
+// button carries, so the main page can open a sub-page for one section.
 export const PANEL = [
   {
     title: "🗓 الجدول",
+    key: "schedule",
     items: ["schedule_orientation", "schedule_direction", "schedule_clean_names", "schedule_show_room"],
   },
   {
     title: "🔔 التنبيهات",
+    key: "alerts",
     items: ["notify_digest", "remind_hours", "time_format"],
   },
   {
     title: "🔄 المراقبة",
+    key: "watch",
     items: ["check_interval"],
   },
   {
     title: "🤖 الذكاء",
+    key: "ai",
     items: ["ai_enabled"],
   },
   {
@@ -173,10 +178,12 @@ export const PANEL = [
     // its switch belongs with the scopes and the format rather than in a
     // section of its own.
     title: "💾 النسخة الاحتياطية",
+    key: "backup",
     items: ["backup_auto", "backup_format", "mega_enabled"],
   },
   {
     title: "💾 النطاقات",
+    key: "scopes",
     items: ["backup_schedule", "backup_assignments", "backup_courses", "backup_grades", "backup_materials"],
   },
 ];

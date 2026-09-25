@@ -163,6 +163,87 @@ export const TOOL_SPECS = [
       },
     },
   },
+  // --- Action tools ---------------------------------------------------------
+  // These change something rather than reading. Each one mirrors a command
+  // the student could type, and they are all things the owner may do — the
+  // line that stays uncrossed is submitting or solving anything on the
+  // student's behalf, which has no tool here at all.
+  {
+    type: "function",
+    function: {
+      name: "set_notification_mode",
+      description: "غيّر طريقة التنبيهات: كل عنصر لوحده أو كلها في رسالة وحدة.",
+      parameters: {
+        type: "object",
+        properties: { mode: { type: "string", enum: ["individual", "digest"], description: "individual = كل عنصر لوحده، digest = رسالة وحدة" } },
+        required: ["mode"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "set_reminder_lead",
+      description: "غيّر وقت التنبيه قبل الموعد النهائي بالساعات.",
+      parameters: {
+        type: "object",
+        properties: { hours: { type: "number", enum: [6, 12, 24, 48], description: "كم ساعة قبل الموعد" } },
+        required: ["hours"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "set_check_interval",
+      description: "غيّر كم دقيقة بين كل فحصة للمنصة. القيم الصحيحة: 5، 10، 30، 60.",
+      parameters: {
+        type: "object",
+        properties: { minutes: { type: "number", enum: [5, 10, 30, 60], description: "الدقائق بين الفحصات" } },
+        required: ["minutes"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "toggle_ai",
+      description: "شغّل أو أوقف ردود الذكاء الاصطناعي للنص الحر.",
+      parameters: {
+        type: "object",
+        properties: { enabled: { type: "boolean", description: "true = شغّال، false = متوقف" } },
+        required: ["enabled"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "run_backup",
+      description: "ابدأ نسخة احتياطية كاملة من كل المنصة. استخدمها لما يطلب نسخة احتياطية.",
+      parameters: { type: "object", properties: {}, required: [] },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "run_fresh_check",
+      description: "افحص المنصة الحين وأبلغ عن كل شي جديد. استخدمها لما يطلب فحص فوري.",
+      parameters: { type: "object", properties: {}, required: [] },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "set_mega_enabled",
+      description: "شغّل أو أوقف رفع النسخ الاحتياطية لـ MEGA.",
+      parameters: {
+        type: "object",
+        properties: { enabled: { type: "boolean", description: "true = يرفع لـ MEGA، false = تلجرام بس" } },
+        required: ["enabled"],
+      },
+    },
+  },
 ];
 
 const isoDay = (d) => d.toISOString().slice(0, 10);
@@ -177,8 +258,14 @@ const isOverdue = (x) =>
   norm(x.status) === "pending" && !!x.dueAt && new Date(x.dueAt).getTime() < Date.now();
 
 // Execute one tool call against the live platform.
-export async function runTool(name, args, accessToken) {
+//
+// Action tools receive the chat id so they can change that chat's settings.
+// They deliberately never accept credentials or file ids — the capability
+// surface is what the student could reach from the settings panel, nothing
+// more.
+export async function runTool(name, args, accessToken, ctx = {}) {
   const a = args || {};
+  const chatId = ctx.chatId || null;
   switch (name) {
     case "list_assignments": {
       const items = (await fetchScope("assignments", accessToken)) || [];
@@ -275,7 +362,63 @@ export async function runTool(name, args, accessToken) {
       const { png, caption, method } = await captureScope(a.scope || "schedule", data);
       return { __photo: png, __caption: caption, method, count: data.length };
     }
+    // --- Actions -----------------------------------------------------------
+    // Settings changes are scoped to the chat the conversation is happening
+    // in, so a guest adjusting things only affects their own view. The tools
+    // are loaded lazily to keep this module free of import cycles with the
+    // command layer.
+    case "set_notification_mode": {
+      const { setSetting } = await import("./settings.js");
+      if (!chatId) return { error: "no chat context" };
+      await setSetting(chatId, "notify_digest", a.mode === "digest");
+      return { ok: true, mode: a.mode };
+    }
+    case "set_reminder_lead": {
+      const { setSetting } = await import("./settings.js");
+      if (!chatId) return { error: "no chat context" };
+      await setSetting(chatId, "remind_hours", Number(a.hours));
+      return { ok: true, hours: Number(a.hours) };
+    }
+    case "set_check_interval": {
+      const { setSetting } = await import("./settings.js");
+      if (!chatId) return { error: "no chat context" };
+      await setSetting(chatId, "check_interval", Number(a.minutes));
+      return { ok: true, minutes: Number(a.minutes) };
+    }
+    case "toggle_ai": {
+      const { setSetting } = await import("./settings.js");
+      if (!chatId) return { error: "no chat context" };
+      await setSetting(chatId, "ai_enabled", !!a.enabled);
+      return { ok: true, enabled: !!a.enabled };
+    }
+    case "set_mega_enabled": {
+      const { setSetting } = await import("./settings.js");
+      if (!chatId) return { error: "no chat context" };
+      await setSetting(chatId, "mega_enabled", !!a.enabled);
+      return { ok: true, enabled: !!a.enabled };
+    }
+    // Commands are invoked through the same handler map the text commands
+    // use, so the AI cannot reach a code path the student could not reach
+    // by typing the command.
+    case "run_backup": {
+      const fn = await dispatchCommand("/backup", chatId);
+      return fn ? { ok: true, started: true } : { error: "backup unavailable" };
+    }
+    case "run_fresh_check": {
+      const fn = await dispatchCommand("/fresh", chatId);
+      return fn ? { ok: true, started: true } : { error: "fresh check unavailable" };
+    }
     default:
       return { error: `unknown tool: ${name}` };
   }
+}
+
+// Look a registered command up the same way a typed command is resolved, so
+// an action tool runs the identical handler with the same access gate.
+async function dispatchCommand(command, chatId) {
+  const { resolveHandler } = await import("./telegram.js");
+  const resolved = resolveHandler(command);
+  if (!resolved) return null;
+  resolved.fn({ chatId, args: [], text: command, raw: null, match: resolved.match });
+  return resolved.fn;
 }
