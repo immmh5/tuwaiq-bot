@@ -7,6 +7,10 @@ import path from "node:path";
 
 const API = "https://api.telegram.org";
 
+// The bot's own contact address. Set as an env var so it can be re-pointed
+// without a redeploy, with the permanent address as the default.
+export const BOT_EMAIL = process.env.BOT_EMAIL || "twqbot@duck.com";
+
 // Run curl with the given args and return { status, text }.
 // Used for multipart uploads (photos) that the JSON helper can't express.
 function curlRaw(args) {
@@ -447,6 +451,9 @@ function handleCallback(update) {
 function printHelp(chatId) {
   const help = [
     "<b>🤖 بوت طويق — المراقب الذكي</b>",
+    "",
+    "<b>📫 تواصل مع البوت:</b>",
+    `<code>${BOT_EMAIL}</code>`,
     "",
     "<b>المراقبة:</b>",
     "/status — حالة الاتصال وآخر فحص",

@@ -602,6 +602,44 @@ function registerCommands() {
     );
   });
 
+  // An illustrated walk-through for linking MEGA, sent as one image per
+  // step so it reads like a slideshow. The same renderer that draws the
+  // timetable draws these, so the style matches the rest of the bot.
+  guarded("/guide", async ({ chatId, args }) => {
+    const topic = (args[0] || "mega").toLowerCase();
+    if (topic !== "mega") {
+      await sendMessage(chatId, "📚 الشروحات المتوفرة الحين: <code>/guide mega</code>");
+      return;
+    }
+    const { toPng } = await import("./images.js");
+    const { MEGA_STEPS, renderStep } = await import("./guide.js");
+    await sendMessage(chatId, "📚 أرسلك شرح MEGA خطوة بخطوة…").catch(() => {});
+    for (const step of MEGA_STEPS) {
+      const svg = renderStep(step);
+      try {
+        const png = await toPng(svg, 1200);
+        await sendPhoto(
+          chatId,
+          png,
+          `<b>الخطوة ${step.n} من ${MEGA_STEPS.length}</b>`,
+        );
+      } catch (err) {
+        // If rendering is unavailable, the step still arrives as text so
+        // the guide is never silently truncated.
+        await sendMessage(
+          chatId,
+          `📌 <b>الخطوة ${step.n}: ${esc(step.title)}</b>\n${esc(step.body)}${
+            step.hint ? `\n\n✓ ${esc(step.hint)}` : ""
+          }`,
+        );
+      }
+    }
+    await sendMessage(
+      chatId,
+      "✅ <b>خلصت الشرح</b>\n\nجرّب الحين:\n<code>/mega status</code>",
+    );
+  });
+
   guarded("/logout", async ({ chatId }) => {
     const { clearCredentials } = await import("./store.js");
     await clearCredentials();
@@ -1434,6 +1472,8 @@ function registerCommands() {
 
 const HELP_TEXT = `<b>🤖 أوامر بوت طويق</b>
 
+📫 <b>تواصل مع البوت:</b> <code>twqbot@duck.com</code>
+
 <b>كل المنصة:</b>
 /all — كل شي في المنصة (واجبات + مواد + اختبارات + درجات + إشعارات)
 /dashboard — ملخص سريع من لوحة طويق
@@ -1480,6 +1520,7 @@ const HELP_TEXT = `<b>🤖 أوامر بوت طويق</b>
 /backupcfg — 🆕 <b>إعدادات النسخة الاحتياطية</b> (أزرار)
 
 <b>☁️ MEGA (اختياري — نسخة شخصية):</b>
+/guide — 📚 <b>شرح MEGA بالصور خطوة بخطوة</b>
 /mega &lt;رابط&gt; — ربط مجلد MEGA الخاص بك
 /mega status — حالة الاتصال
 /mega test — تجربة الكتابة في مجلدك

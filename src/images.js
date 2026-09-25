@@ -54,7 +54,7 @@ const RENDER_OPTS = {
   },
 };
 
-async function toPng(svg, width = 1000) {
+export async function toPng(svg, width = 1000) {
   const img = await renderAsync(svg, { ...RENDER_OPTS, fitTo: { mode: "width", value: width } });
   return img.asPng();
 }
