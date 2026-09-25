@@ -126,10 +126,20 @@ export async function sendPhoto(chatId, pngBuffer, caption = "") {
       // http.js parses the same marker; keep the wire format identical.
       "-w", "\n__STATUS__:%{http_code}",
       "-F", `chat_id=${chatId}`,
-      "-F", `photo=@${tmp};type=image/png`,
+      // curl sniffs the PNG type from the file itself. Adding ";type=image/png"
+      // breaks here: curl treats ";" as a parameter separator, and on the
+      // deployment's curl the token boundary lands mid-path, surfacing as
+      // "Failed to open/read local data" (exit 26) even though the file
+      // exists. A quoted spec also works, but relying on sniffing is one
+      // moving part fewer.
+      "-F", `photo=@${tmp}`,
     ];
     if (caption) {
-      args.push("-F", `caption=${caption}`);
+      // -F treats < and > in a value as an instruction to read the field body
+      // from a file, so an HTML caption like "<b>1</b>" fails the whole
+      // request with exit 26 before the photo is sent. --form-string takes
+      // the value literally, which is what a caption needs.
+      args.push("--form-string", `caption=${caption}`);
       args.push("-F", "parse_mode=HTML");
     }
     args.push(`${API}/bot${token}/sendPhoto`);

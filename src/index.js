@@ -175,6 +175,17 @@ async function answerWithAI(chatId, question) {
 
 // main() is retained for reference; mainWithRetry below is what actually boots.
 async function main() {
+  // megajs raises login failures as stray rejections from its own internals
+  // instead of the error event a caller can await, so a wrong MEGA password
+  // would otherwise take the whole process down. Log and keep running: a
+  // failed backup is recoverable, a dead bot is not.
+  process.on("unhandledRejection", (reason) => {
+    console.warn("unhandledRejection:", String(reason?.message || reason).slice(0, 200));
+  });
+  process.on("uncaughtException", (err) => {
+    console.warn("uncaughtException:", String(err?.message || err).slice(0, 200));
+  });
+
   await initStore(process.env.DATABASE_URL);
   const app = createWebApp();
   app.listen(PORT, () => console.log(`listening on :${PORT}`));
@@ -611,49 +622,27 @@ function registerCommands() {
     );
   });
 
-  // An illustrated walk-through for linking MEGA, sent as one image per
-  // step so it reads like a slideshow. The same renderer that draws the
-  // timetable draws these, so the style matches the rest of the bot.
-  guarded("/guide_mega", async ({ chatId }) => {
-    const { toPng } = await import("./images.js");
-    const { MEGA_STEPS, renderStep } = await import("./guide.js");
-    await sendMessage(chatId, "📚 أرسلك شرح MEGA خطوة بخطوة…").catch(() => {});
-    for (const step of MEGA_STEPS) {
-      const svg = renderStep(step);
-      try {
-        const png = await toPng(svg, 1200);
-        await sendPhoto(
-          chatId,
-          png,
-          `<b>الخطوة ${step.n} من ${MEGA_STEPS.length}</b>`,
-        );
-      } catch (err) {
-        // Log the real reason before falling back: an image that silently
-        // degrades to text is a bug the student reports as "the pictures
-        // stopped coming", so keep the cause reachable from the logs.
-        console.warn("guide: image failed, falling back to text:", err.message);
-        // If rendering is unavailable, the step still arrives as text so
-        // the guide is never silently truncated. The reason travels with
-        // the message so the failure is visible from Telegram too.
-        await sendMessage(
-          chatId,
-          `📌 <b>الخطوة ${step.n}: ${esc(step.title)}</b>\n${esc(step.body)}${
-            step.hint ? `\n\n✓ ${esc(step.hint)}` : ""
-          }\n\n<i>الصورة ما ظهرت: <code>${esc(err.message).slice(0, 120)}</code></i>`,
-        );
-      }
-    }
-    await sendMessage(
-      chatId,
-      "✅ <b>خلصت الشرح</b>\n\nجرّب الحين:\n<code>/mega_status</code>",
-    );
-  });
-
-  // /guide still works, pointing at the MEGA guide.
+  // MEGA setup help. The illustrated walk-through was removed: the image
+  // pipeline turned out to be unreliable in this curl setup, and a guide
+  // that arrives as plain text says the same thing without a failure mode.
+  // The account is owned by the bot and lives in the environment, so there
+  // is little left to teach — just which variables to set.
   guarded("/guide", async ({ chatId }) => {
     await sendMessage(
       chatId,
-      "📚 الشروحات المتوفرة الحين: <code>/guide_mega</code>",
+      [
+        "☁️ <b>MEGA — كيف يشتغل</b>",
+        "",
+        "البوت عنده حساب MEGA خاص فيه، مربوط من متغيرات البيئة:",
+        "<code>MEGA_EMAIL</code> — إيميل الحساب",
+        "<code>MEGA_PASSWORD</code> — كلمة السر",
+        "<code>MEGA_RECOVERY_KEY</code> — مفتاح الاستعادة (اختياري)",
+        "",
+        "كل نسخة احتياطية تُرفع لمجلد <code>طويق-نسخ-احتياطي</code>،",
+        "والبوت يرسلك رابط المجلد بعد كل نسخة.",
+        "",
+        "للتأكد إن الدخول يشتغل: <code>/mega_test</code>",
+      ].join("\n")
     );
   });
 
@@ -1050,10 +1039,12 @@ function registerCommands() {
       }
     }
     // The index file is written last, once every scope has landed, so the
-    // dated folder describes itself fully.
+    // dated folder describes itself fully. It also publishes a link to that
+    // folder, which is the only URL the student needs.
+    let megaLink = null;
     if (megaCfg && snapshot.length) {
       try {
-        await uploadIndex({
+        const res = await uploadIndex({
           cfg: megaCfg,
           dateLabel,
           entries: snapshot.map((s) => ({
@@ -1063,6 +1054,7 @@ function registerCommands() {
             fetchedAt: new Date().toISOString(),
           })),
         });
+        megaLink = res?.link || null;
       } catch (err) {
         console.error("mega index upload failed:", err.message);
       }
@@ -1082,7 +1074,12 @@ function registerCommands() {
             ? "التحديث التلقائي متوقف — شغّله من /backupcfg"
             : "التحديث التلقائي شغال مع كل فحص"
         }</i>`,
-      ].join("\n")
+        megaLink ? "" : null,
+        megaLink ? `🔗 <b>افتح النسخة في MEGA:</b>` : null,
+        megaLink ? `<a href="${esc(megaLink)}">${esc(megaLink)}</a>` : null,
+      ]
+        .filter((x) => x !== null)
+        .join("\n")
     );
   });
 
@@ -1116,23 +1113,18 @@ function registerCommands() {
     await sendMessage(chatId, HELP_TEXT);
   });
 
-  // ===== MEGA: optional personal backup destination =====
-  // The student links their own MEGA folder, and /backup then writes an
-  // organised snapshot into it. Linking is entirely optional — with no
-  // folder linked, /backup keeps its Telegram-only behaviour.
+  // ===== MEGA: the bot's own backup destination =====
+  // The account is owned by the bot and lives in the environment, so the
+  // only commands that make sense here are reading state and testing the
+  // login. There is no linking flow left to expose.
 
   async function megaModule() {
     return import("./mega.js");
   }
 
-  // A sub-command dispatcher: /mega_status and /mega_test call the same
-  // /mega implementation with the argument already chosen, so the space in
-  // "/mega status" is never needed.
-  async function megaSub(ctx, sub) {
-    return megaImpl(ctx, sub);
-  }
-
   guarded("/mega", async (ctx) => megaImpl(ctx, (ctx.args[0] || "").toLowerCase()));
+  guarded("/mega_status", async (ctx) => megaImpl(ctx, "status"));
+  guarded("/mega_test", async (ctx) => megaImpl(ctx, "test"));
 
   async function megaImpl({ chatId }, sub) {
     const { getMegaConfig, probeMega, isMegaConfigured } = await megaModule();
@@ -1157,7 +1149,7 @@ function registerCommands() {
             "<code>MEGA_PASSWORD</code> — كلمة السر",
             "<code>MEGA_RECOVERY_KEY</code> — مفتاح الاستعادة (اختياري)",
             "",
-            "<i>📚 شرح بالصور: <code>/guide_mega</code></i>",
+            "<i>كيف يشتغل: <code>/guide</code></i>",
           ].join("\n")
         );
         return;
@@ -1216,7 +1208,7 @@ function registerCommands() {
         "3️⃣ جرّب: <code>/mega_test</code>",
         "",
         "<i>🔒 الربط يتم من متغيرات البيئة في Render — ما تُرسل بالأوامر.</i>",
-        "<i>📚 شرح بالصور: <code>/guide_mega</code></i>",
+        "<i>كيف يشتغل MEGA: <code>/guide</code></i>",
       ].join("\n")
     );
   });
@@ -1539,7 +1531,7 @@ const HELP_TEXT = `<b>🤖 أوامر بوت طويق</b>
 /backupcfg — 🆕 <b>إعدادات النسخة الاحتياطية</b> (أزرار)
 
 <b>☁️ MEGA (نسخ احتياطي سحابي):</b>
-/guide_mega — 📚 <b>شرح MEGA بالصور خطوة بخطوة</b>
+/guide — 📚 <b>كيف يشتغل MEGA</b>
 /mega_status — حالة الاتصال
 /mega_test — تجربة الدخول
 <i>الربط من متغيرات البيئة: MEGA_EMAIL و MEGA_PASSWORD</i>
