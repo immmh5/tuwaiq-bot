@@ -39,6 +39,12 @@ export function on(command, fn) {
   handlers.set(command, fn);
 }
 
+// Look a registered command back up, so a button can invoke the same
+// handler the text command uses instead of duplicating its body.
+export function getHandler(command) {
+  return handlers.get(command);
+}
+
 export async function sendMessage(chatId, text, extra = {}) {
   if (!token) throw new Error("TELEGRAM_BOT_TOKEN not set");
   const body = {

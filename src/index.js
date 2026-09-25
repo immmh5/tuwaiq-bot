@@ -135,11 +135,39 @@ function registerCommands() {
   function settingsRows(cfg) {
     // One row per section so the buttons stay under their heading and no
     // row is wider than the phone screen.
-    return PANEL.map((sec) => sec.items.map((name) => ({
-      label: LABELS[name][String(cfg[name])] || String(cfg[name]),
-      action: `set:${name}`,
-    }))).concat([[{ label: "⛔ إغلاق", action: "close" }]]);
+    return PANEL.map((sec) =>
+      sec.items.map((name) => ({
+        label: LABELS[name][String(cfg[name])] || String(cfg[name]),
+        action: `set:${name}`,
+      }))
+    ).concat([[{ label: "⛔ إغلاق", action: "close" }]]);
   }
+
+  // The backup panel reuses the same button machinery, but only lists the
+  // backup settings — the two panels stay separate so editing one does not
+  // rewrite the other.
+  function backupRows(cfg) {
+    const scopes = ["backup_schedule", "backup_assignments", "backup_courses", "backup_grades", "backup_materials"];
+    const formats = ["backup_format", "backup_auto"];
+    return [
+      scopes.map((name) => ({ label: LABELS[name][String(cfg[name])], action: `set:${name}` })),
+      formats.map((name) => ({ label: LABELS[name][String(cfg[name])], action: `set:${name}` })),
+      [{ label: "💾 نفّذ نسخة الحين", action: "run_backup" }, { label: "⛔ إغلاق", action: "close" }],
+    ];
+  }
+
+  // A button on the backup panel that runs the copy in place, so the student
+  // can flip a scope and immediately see the result. It answers the press
+  // and hands control to the same handler /backup registered, so there is
+  // exactly one copy of the work.
+  onCallback("run_backup", async ({ chatId, queryId }) => {
+    await answerCallbackQuery(queryId, "💾 أبدأ النسخة…");
+    // Look the handler up the same way the message path does, then invoke it
+    // with the shape it expects.
+    const { getHandler } = await import("./telegram.js");
+    const fn = typeof getHandler === "function" ? getHandler("/backup") : null;
+    if (fn) await fn({ chatId, args: "", text: "/backup" }).catch(() => {});
+  });
 
   function settingsText(cfg) {
     const lines = ["<b>⚙️ الإعدادات</b>", ""];
@@ -664,6 +692,108 @@ function registerCommands() {
     }
   });
 
+  // A full copy of the platform, respecting the student's per-scope and
+  // per-format choices. Scope toggles skip a section entirely; the format
+  // setting decides whether a section arrives as the rendered card, a plain
+  // list, or both — so the student can take the schedule as an image and the
+  // grades as text without touching anything else.
+  on("/backup", async ({ chatId }) => {
+    if (!(await requireLogin(chatId))) return;
+    const cfg = await getSettings(chatId);
+    const tokens = await getTokens();
+    const fmt = cfg.backup_format || "both";
+
+    const plan = [
+      ["schedule", "🗓 الجدول", "schedule"],
+      ["assignments", "📝 الواجبات", "assignments"],
+      ["courses", "📘 المقررات", "courses"],
+      ["grades", "🏆 الدرجات", "grades"],
+      ["materials", "📚 المواد", "materials"],
+    ].filter(([key]) => cfg[`backup_${key}`] !== false);
+
+    if (!plan.length) {
+      await sendMessage(chatId, "🚫 كل النطاقات متوقفة من إعدادات النسخة الاحتياطية.\nشغّلها من <code>/backupcfg</code>.");
+      return;
+    }
+
+    await sendMessage(chatId, `💾 أبدأ النسخة الاحتياطية — ${plan.length} نطاقات…`).catch(() => {});
+
+    // Each scope carries its own image renderer and text formatter; the
+    // format setting picks which are actually sent.
+    const img = await import("./images.js");
+    const renderers = {
+      schedule: img.renderScheduleGridImage,
+      assignments: img.renderAssignmentsImage,
+      grades: img.renderGradesImage,
+    };
+    const totalCount = { ok: 0, fail: 0 };
+    for (const [key, label, scope] of plan) {
+      try {
+        const items = await fetchScope(scope, tokens.accessToken);
+        const live = (items || []).filter(
+          (s) => String(s.status || "").toLowerCase() !== "cancelled"
+        );
+        const n = (key === "schedule" ? live : items || []).length;
+        const word = n === 1 ? "عنصر واحد" : n === 2 ? "عنصرين" : `${n} عنصر`;
+
+        if ((fmt === "image" || fmt === "both") && renderers[key]) {
+          const out = await renderers[key](live, {
+            orientation: cfg.schedule_orientation,
+            showRoom: cfg.schedule_show_room !== false,
+            direction: cfg.schedule_direction === "ltr" ? "ltr" : "rtl",
+            cleanNames: cfg.schedule_clean_names !== false,
+          });
+          await sendPhoto(chatId, out.png, `${label} — ${word}`);
+        }
+        if (fmt === "text" || fmt === "both") {
+          const body = (key === "schedule" ? live : items || []).slice(0, 12);
+          const text = body.length
+            ? body.map((s, i) => `${i + 1}. ${esc(String(s.title || s.subjectName || s.name || "—"))}`).join("\n")
+            : "<i>فاضي</i>";
+          for (const chunk of chunkText(`${label} (${word})\n${text}`)) {
+            await sendMessage(chatId, chunk);
+          }
+        }
+        totalCount.ok++;
+      } catch (err) {
+        totalCount.fail++;
+        await sendMessage(chatId, `${label}\n<i>خطأ: ${esc(err.message)}</i>`).catch(() => {});
+      }
+    }
+    await sendMessage(
+      chatId,
+      `✅ <b>تمت النسخة الاحتياطية</b>\nناجح: ${totalCount.ok} | فشل: ${totalCount.fail}\n\n<i>${
+        cfg.backup_auto === false ? "التحديث التلقائي متوقف — شغّله من /backupcfg" : "التحديث التلقائي شغال مع كل فحص"
+      }</i>`
+    );
+  });
+
+  // Backup settings panel: which scopes get copied, and in what shape. Same
+  // button machinery as /settings, its own message so the two stay separate.
+  on("/backupcfg", async ({ chatId }) => {
+    const cfg = await getSettings(chatId);
+    await sendButtons(
+      chatId,
+      [
+        "<b>💾 إعدادات النسخة الاحتياطية</b>",
+        "",
+        "<b>النطاقات</b>",
+        `الجدول: ${cfg.backup_schedule === false ? "متوقف" : "شغال"}`,
+        `الواجبات: ${cfg.backup_assignments === false ? "متوقف" : "شغال"}`,
+        `المقررات: ${cfg.backup_courses === false ? "متوقف" : "شغال"}`,
+        `الدرجات: ${cfg.backup_grades === false ? "متوقف" : "شغال"}`,
+        `المواد: ${cfg.backup_materials === false ? "متوقف" : "شغال"}`,
+        "",
+        "<b>الشكل</b>",
+        `الطريقة: ${LABELS.backup_format[String(cfg.backup_format)]}`,
+        `التلقائي: ${cfg.backup_auto === false ? "متوقف" : "شغال"}`,
+        "",
+        "<i>اضغط أي زر عشان تغيره — التغيير فوري.</i>",
+      ].join("\n"),
+      backupRows(cfg)
+    );
+  });
+
   on("/help", async ({ chatId }) => {
     await sendMessage(chatId, HELP_TEXT);
   });
@@ -941,6 +1071,7 @@ const HELP_TEXT = `<b>🤖 أوامر بوت طويق</b>
 <b>كل المنصة:</b>
 /all — كل شي في المنصة (واجبات + مواد + اختبارات + درجات + إشعارات)
 /dashboard — ملخص سريع من لوحة طويق
+/backup — 🆕 <b>نسخة احتياطية كاملة</b> لكل المنصة
 
 <b>أوامر لكل نطاق:</b>
 /assignments [pending / graded / overdue] — الواجبات
@@ -971,15 +1102,16 @@ const HELP_TEXT = `<b>🤖 أوامر بوت طويق</b>
 /export grades — تصدير JSON لأي نطاق
 /due — الواجبات المستحقة خلال ٢٤ ساعة
 
-<b>الذكاء الاصطناعي:</b>
+<b>🤖 الذكاء الاصطناعي:</b>
 /ai — حالة الذكاء وإعداداته
 أي كلام بدون / — اسأله أي شي عن منصتك!
 
-<b>التحكم:</b>
+<b>🛠 التحكم:</b>
 /status — حالة البوت
 /check — فحص فوري
 /fresh — ✅ أثبت إن البيانات من المنصة الحين
 /settings — ⚙️ لوحة الإعدادات (أزرار)
+/backupcfg — 🆕 <b>إعدادات النسخة الاحتياطية</b> (أزرار)
 /watch assignments on|off — تشغيل/إيقاف مراقبة نطاق
 /interval 15 — تغيير دقيقة الفحص
 /seen — آخر ما رُصد

@@ -31,6 +31,22 @@ const DEFAULTS = {
   check_interval: 10,
   // Whether the AI answers free text.
   ai_enabled: true,
+  // --- Backup ---------------------------------------------------------------
+  // Per-scope download control for /backup. Each is on by default; turning
+  // a scope off skips it entirely (no text, no image).
+  backup_schedule: true,
+  backup_assignments: true,
+  backup_courses: true,
+  backup_grades: true,
+  backup_materials: true,
+  // --- Format ---------------------------------------------------------------
+  // Which representation /backup sends per scope. "image" renders the nice
+  // card, "text" sends a plain list, "both" sends the image then the list.
+  backup_format: "both",
+  // --- Automation -----------------------------------------------------------
+  // When true the scheduled check also refreshes the backup snapshot, so a
+  // copy of the platform is always waiting without asking for it.
+  backup_auto: true,
 };
 
 // Human-readable labels per value, shown on the buttons themselves.
@@ -45,6 +61,15 @@ export const LABELS = {
   remind_hours: { 24: "٢٤ ساعة", 12: "١٢ ساعة", 48: "٤٨ ساعة", 6: "٦ ساعات" },
   check_interval: { 10: "١٠ دقائق", 5: "٥ دقائق", 30: "٣٠ دقيقة", 60: "ساعة" },
   ai_enabled: { true: "مفعّل", false: "متوقف" },
+  // Scope toggles for the backup. The label carries the scope name so the
+  // row reads naturally under its section heading.
+  backup_schedule: { true: "الجدول: نعم", false: "الجدول: لا" },
+  backup_assignments: { true: "الواجبات: نعم", false: "الواجبات: لا" },
+  backup_courses: { true: "المقررات: نعم", false: "المقررات: لا" },
+  backup_grades: { true: "الدرجات: نعم", false: "الدرجات: لا" },
+  backup_materials: { true: "المواد: نعم", false: "المواد: لا" },
+  backup_format: { image: "صورة بس", text: "نص بس", both: "صورة + نص" },
+  backup_auto: { true: "تلقائي: شغال", false: "تلقائي: متوقف" },
 };
 
 // The panel body names each setting, so the short button labels stay
@@ -123,5 +148,13 @@ export const PANEL = [
   {
     title: "🤖 الذكاء",
     items: ["ai_enabled"],
+  },
+  {
+    title: "💾 النسخة الاحتياطية — النطاقات",
+    items: ["backup_schedule", "backup_assignments", "backup_courses", "backup_grades", "backup_materials"],
+  },
+  {
+    title: "💾 النسخة الاحتياطية — الشكل",
+    items: ["backup_format", "backup_auto"],
   },
 ];
