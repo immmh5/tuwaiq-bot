@@ -215,7 +215,10 @@ export async function runCheckOnce() {
     };
 
     const results = {};
-    for (const scope of Object.keys({ assignments: 1, materials: 1, exams: 1, grades: 1 })) {
+    // Every scope the platform exposes is polled. notifications was missing
+    // from this list, which meant the merge above could turn it on while the
+    // loop still never asked for it.
+    for (const scope of Object.keys({ assignments: 1, materials: 1, exams: 1, grades: 1, notifications: 1 })) {
       if (!config[scope]) continue;
       try {
         results[scope] = await fetchScope(scope, accessToken);
