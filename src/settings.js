@@ -39,6 +39,10 @@ const DEFAULTS = {
   backup_courses: true,
   backup_grades: true,
   backup_materials: true,
+  // Exams and notifications are watched and shown in /all; the backup covers
+  // every watched scope so the archive never silently misses a kind of data.
+  backup_exams: true,
+  backup_notifications: true,
   // --- Format ---------------------------------------------------------------
   // Which representation /backup sends per scope. "image" renders the nice
   // card, "text" sends a plain list, "both" sends the image then the list.
@@ -88,6 +92,8 @@ export const LABELS = {
   backup_courses: { true: "المقررات: نعم", false: "المقررات: لا" },
   backup_grades: { true: "الدرجات: نعم", false: "الدرجات: لا" },
   backup_materials: { true: "المواد: نعم", false: "المواد: لا" },
+  backup_exams: { true: "الاختبارات: نعم", false: "الاختبارات: لا" },
+  backup_notifications: { true: "الإشعارات: نعم", false: "الإشعارات: لا" },
   backup_format: { image: "صورة بس", text: "نص بس", both: "صورة + نص" },
   backup_auto: { true: "تلقائي: شغال", false: "تلقائي: متوقف" },
   // MEGA section. The link toggle is a pair of well-known values rather than
@@ -203,6 +209,6 @@ export const PANEL = [
   {
     title: "💾 النطاقات",
     key: "scopes",
-    items: ["backup_schedule", "backup_assignments", "backup_courses", "backup_grades", "backup_materials"],
+    items: ["backup_schedule", "backup_assignments", "backup_courses", "backup_grades", "backup_materials", "backup_exams", "backup_notifications"],
   },
 ];

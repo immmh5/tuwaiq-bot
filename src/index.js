@@ -1054,12 +1054,18 @@ function registerCommands() {
     const tokens = await getTokens();
     const fmt = cfg.backup_format || "both";
 
+    // The backup must cover every scope the watcher watches; leaving one out
+    // would mean the student's archive silently missed a whole kind of data.
+    // exams and notifications are watched and shown in /all, so they belong
+    // here too.
     const plan = [
       ["schedule", "🗓 الجدول", "schedule"],
       ["assignments", "📝 الواجبات", "assignments"],
-      ["courses", "📘 المقررات", "courses"],
+      ["exams", "📄 الاختبارات", "exams"],
       ["grades", "🏆 الدرجات", "grades"],
+      ["courses", "📘 المقررات", "courses"],
       ["materials", "📚 المواد", "materials"],
+      ["notifications", "🔔 الإشعارات", "notifications"],
     ].filter(([key]) => cfg[`backup_${key}`] !== false);
 
     if (!plan.length) {
@@ -1076,6 +1082,9 @@ function registerCommands() {
       schedule: img.renderScheduleGridImage,
       assignments: img.renderAssignmentsImage,
       grades: img.renderGradesImage,
+      exams: img.renderExamsImage,
+      materials: img.renderMaterialsImage,
+      notifications: img.renderNotificationsImage,
     };
     const totalCount = { ok: 0, fail: 0 };
     // If the student linked a MEGA folder, the same data is written there as
@@ -1414,9 +1423,14 @@ function registerCommands() {
   // table exactly as the platform draws it and the one the schedule
   // commands point at. The old /img_schedule is gone — one schedule image
   // command is enough, and the site-faithful one is it.
+  // Every scope has an image now, so the whole platform can be read as a
+  // picture rather than a list.
   guarded("/img_grid", async (ctx) => onImg(ctx, "grid"));
   guarded("/img_assignments", async (ctx) => onImg(ctx, "assignments"));
   guarded("/img_grades", async (ctx) => onImg(ctx, "grades"));
+  guarded("/img_exams", async (ctx) => onImg(ctx, "exams"));
+  guarded("/img_materials", async (ctx) => onImg(ctx, "materials"));
+  guarded("/img_notifications", async (ctx) => onImg(ctx, "notifications"));
   guarded("/img_site", async (ctx) => siteImpl(ctx, "schedule"));
 
   // Legacy spellings still answer, so an existing habit does not break, but
@@ -1481,7 +1495,7 @@ function registerCommands() {
       await sendMessage(
         chatId,
         cfg.enabled
-          ? "⏰ <b>تنبيهات الموعد النهائي مفعّلة</b>\n\nبأرسلك تنبيه لكل واجب باقي عليه <b>أقل من ٢٤ ساعة</b>، وتنبيه ثاني لو فاته الموعد.\n\n<i>مرة وحدة لكل واجب — ما بسپم.</i>"
+          ? "⏰ <b>تنبيهات الموعد النهائي مفعّلة</b>\n\nبأرسلك تنبيه لكل واجب باقي عليه <b>أقل من ٢٤ ساعة</b>، وتنبيه ثاني لو فاته الموعد.\n\n<i>مرة وحدة لكل واجب — ما أعيد نفس التنبيه.</i>"
           : "🔕 <b>تنبيهات الموعد النهائي مطفية</b>\n\nما بأرسل تذكيرات الأوقات.\n\n<i>جرّب /remind on وقت ما تبيها ترجع.</i>"
       );
       return;
@@ -1562,11 +1576,11 @@ function registerCommands() {
   // Shared by /img <scope> and the /img_<scope> shortcuts.
   async function onImg({ chatId }, scope) {
     if (!(await requireLogin(chatId))) return;
-    const valid = ["assignments", "grades", "grid"];
+    const valid = ["assignments", "grades", "grid", "exams", "materials", "notifications"];
     if (!valid.includes(scope)) {
       await sendMessage(
         chatId,
-        "🖼 <b>الصور</b>\n\n<code>/img_site</code> — الجدول مثل ما يظهر في المنصة بالضبط\n<code>/img_grid</code> — شبكة الأيام والأوقات\n<code>/img_assignments</code> — الواجبات\n<code>/img_grades</code> — الدرجات"
+        "🖼 <b>الصور</b>\n\n<code>/img_site</code> — الجدول مثل ما يظهر في المنصة بالضبط\n<code>/img_grid</code> — شبكة الأيام والأوقات\n<code>/img_assignments</code> — الواجبات\n<code>/img_grades</code> — الدرجات\n<code>/img_exams</code> — الاختبارات\n<code>/img_materials</code> — المواد\n<code>/img_notifications</code> — الإشعارات"
       );
       return;
     }
@@ -1577,10 +1591,20 @@ function registerCommands() {
       grid: "🗓 أبني شبكة الجدول…",
       assignments: "📚 أجيب واجباتك وأرسمها…",
       grades: "📊 أجيب درجاتك وأرسمها…",
+      exams: "📄 أجيب اختباراتك وأرسمها…",
+      materials: "📚 أجيب موادك وأرسمها…",
+      notifications: "🔔 أجيب إشعاراتك وأرسمها…",
     };
     try {
-      const { renderScheduleImage, renderAssignmentsImage, renderGradesImage, renderScheduleGridImage } =
-        await import("./images.js");
+      const {
+        renderScheduleImage,
+        renderAssignmentsImage,
+        renderGradesImage,
+        renderScheduleGridImage,
+        renderExamsImage,
+        renderMaterialsImage,
+        renderNotificationsImage,
+      } = await import("./images.js");
       if (scope === "grid") {
         await sendMessage(chatId, STEP.grid).catch(() => {});
         const items = await fetchScope("schedule", tokens.accessToken);
@@ -1619,12 +1643,22 @@ function registerCommands() {
         return;
       }
       await sendMessage(chatId, "🖌 أرسم الصورة الحين…").catch(() => {});
-      const out =
-        scope === "schedule"
-          ? await renderScheduleImage(items)
-          : scope === "assignments"
-          ? await renderAssignmentsImage(items)
-          : await renderGradesImage(items);
+      // One renderer per scope; the map keeps the branch list flat as more
+      // scopes gain images.
+      const RENDERERS = {
+        schedule: renderScheduleImage,
+        assignments: renderAssignmentsImage,
+        grades: renderGradesImage,
+        exams: renderExamsImage,
+        materials: renderMaterialsImage,
+        notifications: renderNotificationsImage,
+      };
+      const render = RENDERERS[scope];
+      if (!render) {
+        await sendMessage(chatId, "🖼 هذا النطاق ما عنده صورة الحين — جرّب <code>/img_site</code>.");
+        return;
+      }
+      const out = await render(items);
       await sendPhoto(chatId, out.png, out.caption);
     } catch (err) {
       await sendMessage(chatId, `⚠️ ما قدرت أصوّر: <code>${esc(err.message)}</code>`);
@@ -1689,6 +1723,9 @@ const HELP_TEXT = `<b>🤖 أوامر بوت طويق</b>
 /img_grid — الجدول بشبكة الأيام والأوقات
 /img_assignments — الواجبات كصورة
 /img_grades — الدرجات كصورة
+/img_exams — الاختبارات كصورة
+/img_materials — المواد كصورة
+/img_notifications — الإشعارات كصورة
 
 <b>📣 التنبيهات الذكية:</b>
 /proactive — جرّبها الحين

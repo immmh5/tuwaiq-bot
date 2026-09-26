@@ -564,3 +564,128 @@ export async function renderGradesImage(grades) {
   </svg>`;
   return { png: await toPng(svg), caption: `🏆 درجاتك (${grades.length})` };
 }
+
+// ---- Exams image --------------------------------------------------------------
+// Exams are few and far between, so the card leads with the countdown and
+// puts the date and duration underneath — the question the student is
+// actually asking is "how much time do I have left", not "what is this exam".
+export async function renderExamsImage(exams) {
+  const PAD = 32;
+  const W = 1000 - PAD * 2;
+  const now = Date.now();
+  const DAY_MS = 24 * 60 * 60 * 1000;
+
+  const upcoming = (exams || [])
+    .filter((e) => e.startsAt && new Date(e.startsAt).getTime() > now)
+    .sort((a, b) => new Date(a.startsAt).getTime() - new Date(b.startsAt).getTime());
+
+  let y = 140;
+  const rows = [];
+  for (const e of upcoming.slice(0, 10)) {
+    const start = new Date(e.startsAt).getTime();
+    const days = Math.ceil((start - now) / DAY_MS);
+    const label = days <= 1 ? "باقي أقل من يوم" : days === 2 ? "باقي يومين" : `باقي ${days} يوم`;
+    const urgent = days <= 2 ? C.bad : days <= 7 ? C.warn : C.good;
+
+    rows.push(`
+    <rect x="${PAD}" y="${y}" width="${W}" height="86" rx="12" fill="${C.cardAlt}"/>
+    <rect x="${PAD}" y="${y}" width="6" height="86" rx="3" fill="${urgent}"/>
+    <text x="${PAD + 22}" y="${y + 34}" font-family="${ARABIC_FONT}" font-size="24" font-weight="700"
+          fill="${C.text}" direction="rtl">${esc(e.title || "اختبار")}</text>
+    <text x="${PAD + 22}" y="${y + 66}" font-family="${ARABIC_FONT}" font-size="19"
+          fill="${C.sub}" direction="rtl">📚 ${esc(e.subject || "—")}  •  ⏱ ${esc(String(e.durationMin || "—"))} دقيقة</text>
+    <text x="${PAD + W - 22}" y="${y + 36}" font-family="${ARABIC_FONT}" font-size="20" font-weight="700"
+          fill="${urgent}" text-anchor="end" direction="rtl">${esc(label)}</text>
+    <text x="${PAD + W - 22}" y="${y + 66}" font-family="${ARABIC_FONT}" font-size="17"
+          fill="${C.sub}" text-anchor="end" direction="rtl">${esc(fmtDayName(e.startsAt))}</text>`);
+    y += 100;
+  }
+  if (!upcoming.length) {
+    rows.push(`
+    <rect x="${PAD}" y="${y}" width="${W}" height="80" rx="12" fill="${C.cardAlt}"/>
+    <text x="500" y="${y + 48}" font-family="${ARABIC_FONT}" font-size="22" font-weight="600"
+          fill="${C.sub}" text-anchor="middle" direction="rtl">ما في اختبارات قادمة — ارتاح</text>`);
+    y += 94;
+  }
+
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="${Math.max(y, 200)}" direction="rtl">
+    <rect width="1000" height="${Math.max(y, 200)}" fill="${C.bg}"/>
+    ${header("📄 الاختبارات", `${upcoming.length} اختبار قادم`)}
+    ${rows.join("")}
+  </svg>`;
+  return { png: await toPng(svg), caption: `📄 ${upcoming.length} اختبار قادم` };
+}
+
+// ---- Materials image -----------------------------------------------------------
+// Materials are the longest list on the platform, so the image shows the most
+// recent ones with their type — the student is usually looking for "that file
+// the teacher just uploaded", not the whole bibliography.
+export async function renderMaterialsImage(materials) {
+  const PAD = 32;
+  const W = 1000 - PAD * 2;
+  let y = 140;
+  const rows = [];
+  for (const m of (materials || []).slice(0, 12)) {
+    const icon = String(m.contentType || "").match(/pdf|file|doc/i) ? "📎" : "🎬";
+    rows.push(`
+    <rect x="${PAD}" y="${y}" width="${W}" height="70" rx="10" fill="${C.cardAlt}"/>
+    <rect x="${PAD}" y="${y}" width="6" height="70" rx="3" fill="${C.accent}"/>
+    <text x="${PAD + 22}" y="${y + 32}" font-family="${ARABIC_FONT}" font-size="21" font-weight="600"
+          fill="${C.text}" direction="rtl">${esc(m.title || "مادة")}</text>
+    <text x="${PAD + 22}" y="${y + 56}" font-family="${ARABIC_FONT}" font-size="17"
+          fill="${C.sub}" direction="rtl">📚 ${esc(m.subject || "—")}</text>
+    <text x="${PAD + W - 22}" y="${y + 34}" font-family="${ARABIC_FONT}" font-size="18"
+          fill="${C.sub}" text-anchor="end" direction="rtl">${icon} ${esc(String(m.contentType || "ملف"))}</text>`);
+    y += 82;
+  }
+  if (!rows.length) {
+    rows.push(`
+    <rect x="${PAD}" y="${y}" width="${W}" height="80" rx="12" fill="${C.cardAlt}"/>
+    <text x="500" y="${y + 48}" font-family="${ARABIC_FONT}" font-size="22" font-weight="600"
+          fill="${C.sub}" text-anchor="middle" direction="rtl">ما في مواد جديدة</text>`);
+    y += 94;
+  }
+
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="${Math.max(y, 200)}" direction="rtl">
+    <rect width="1000" height="${Math.max(y, 200)}" fill="${C.bg}"/>
+    ${header("📚 المواد", `${(materials || []).length} مادة`)}
+    ${rows.join("")}
+  </svg>`;
+  return { png: await toPng(svg), caption: `📚 ${(materials || []).length} مادة` };
+}
+
+// ---- Notifications image -------------------------------------------------------
+// The notification list is what the platform's bell shows; the image keeps
+// unread ones on top and marks them, so a glance answers "what did I miss".
+export async function renderNotificationsImage(notifications) {
+  const PAD = 32;
+  const W = 1000 - PAD * 2;
+  const list = (notifications || []).slice(0, 10);
+  let y = 140;
+  const rows = [];
+  for (const n of list) {
+    const unread = n.read === false || n.isRead === false;
+    rows.push(`
+    <rect x="${PAD}" y="${y}" width="${W}" height="74" rx="10" fill="${C.cardAlt}"/>
+    <rect x="${PAD}" y="${y}" width="6" height="74" rx="3" fill="${unread ? C.accent : C.line}"/>
+    <text x="${PAD + 22}" y="${y + 32}" font-family="${ARABIC_FONT}" font-size="21" font-weight="${unread ? "700" : "500"}"
+          fill="${C.text}" direction="rtl">${esc(n.title || "إشعار")}${unread ? "  •" : ""}</text>
+    <text x="${PAD + 22}" y="${y + 58}" font-family="${ARABIC_FONT}" font-size="16"
+          fill="${C.sub}" direction="rtl">${esc(String(n.body || "").slice(0, 90))}</text>`);
+    y += 86;
+  }
+  if (!rows.length) {
+    rows.push(`
+    <rect x="${PAD}" y="${y}" width="${W}" height="80" rx="12" fill="${C.cardAlt}"/>
+    <text x="500" y="${y + 48}" font-family="${ARABIC_FONT}" font-size="22" font-weight="600"
+          fill="${C.sub}" text-anchor="middle" direction="rtl">ما في إشعارات</text>`);
+    y += 94;
+  }
+
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="${Math.max(y, 200)}" direction="rtl">
+    <rect width="1000" height="${Math.max(y, 200)}" fill="${C.bg}"/>
+    ${header("🔔 الإشعارات", `${list.length} أحدث إشعار`)}
+    ${rows.join("")}
+  </svg>`;
+  return { png: await toPng(svg), caption: `🔔 ${list.length} إشعار` };
+}
