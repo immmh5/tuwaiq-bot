@@ -91,13 +91,13 @@ const fmtDayName = (iso) => {
 };
 
 
-function header(title, subtitle) {
+function header(title, subtitle, rtl = true) {
   return `
   <rect x="0" y="0" width="1000" height="118" fill="${C.accent}" opacity="0.08"/>
   <text x="980" y="58" font-family="${ARABIC_FONT}" font-size="40" font-weight="700"
-        fill="${C.text}" text-anchor="end" direction="rtl">${esc(title)}</text>
+        fill="${C.text}" text-anchor="end" direction="${rtl ? "rtl" : "ltr"}">${esc(title)}</text>
   <text x="980" y="96" font-family="${ARABIC_FONT}" font-size="22"
-        fill="${C.sub}" text-anchor="end" direction="rtl">${esc(subtitle)}</text>
+        fill="${C.sub}" text-anchor="end" direction="${rtl ? "rtl" : "ltr"}">${esc(subtitle)}</text>
   <rect x="0" y="118" width="1000" height="2" fill="${C.line}"/>`;
 }
 
@@ -488,7 +488,7 @@ export async function renderScheduleImage(sessions, opts = {}) {
   const liveCount = slots.reduce((n, s) => n + (s.items.some((x) => x.status !== "cancelled") ? 1 : 0), 0);
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="${y}" direction="${rtl ? "rtl" : "ltr"}">
     <rect width="1000" height="${y}" fill="${C.bg}"/>
-    ${header("🗓 الجدول الأسبوعي", `${liveCount} حصة فعلية في ${days.length} أيام`)}
+    ${header("🗓 الجدول الأسبوعي", `${liveCount} حصة فعلية في ${days.length} أيام`, rtl)}
     ${rows.join("")}
   </svg>`;
   return {
@@ -514,7 +514,7 @@ export async function renderAssignmentsImage(assignments, opts = {}) {
     rows.push(`
     <rect x="${PAD}" y="${y}" width="${W}" height="48" rx="12" fill="${color}" opacity="0.16"/>
     <text x="${PAD + 20}" y="${y + 32}" font-family="${ARABIC_FONT}" font-size="22" font-weight="700"
-          fill="${color}" direction="rtl">${esc(title)} (${list.length})</text>`);
+          fill="${color}" direction="${rtl ? "rtl" : "ltr"}">${esc(title)} (${list.length})</text>`);
     y += 60;
     for (const a of list) {
       const overdue =
@@ -530,9 +530,9 @@ export async function renderAssignmentsImage(assignments, opts = {}) {
       <text x="${PAD + 22}" y="${y + 52}" font-family="${ARABIC_FONT}" font-size="18"
             fill="${C.sub}" direction="${rtl ? "rtl" : "ltr"}">📚 ${esc(cleanSubjectName(a.subject, cleanNames) || "—")}${overdue ? "  • متأخر" : ""}</text>
       <text x="${PAD + W - 22}" y="${y + 30}" font-family="${ARABIC_FONT}" font-size="18"
-            fill="${C.sub}" text-anchor="end" direction="rtl">⏰ ${esc(due)}</text>
+            fill="${C.sub}" text-anchor="end" direction="${rtl ? "rtl" : "ltr"}">⏰ ${esc(due)}</text>
       ${score ? `<text x="${PAD + W - 22}" y="${y + 54}" font-family="${ARABIC_FONT}" font-size="18"
-            fill="${C.good}" text-anchor="end" direction="rtl">${esc(score)}</text>` : ""}`);
+            fill="${C.good}" text-anchor="end" direction="${rtl ? "rtl" : "ltr"}">${esc(score)}</text>` : ""}`);
       y += 74;
     }
     y += 14;
@@ -544,7 +544,7 @@ export async function renderAssignmentsImage(assignments, opts = {}) {
 
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="${Math.max(y, 200)}" direction="${rtl ? "rtl" : "ltr"}">
     <rect width="1000" height="${Math.max(y, 200)}" fill="${C.bg}"/>
-    ${header("📝 الواجبات", `${assignments.length} واجب — ${pend.length} معلّق`)}
+    ${header("📝 الواجبات", `${assignments.length} واجب — ${pend.length} معلّق`, rtl)}
     ${rows.join("")}
   </svg>`;
   return {
@@ -570,11 +570,11 @@ export async function renderGradesImage(grades, opts = {}) {
     const r = `
     <rect x="${PAD}" y="${y}" width="${W}" height="62" rx="10" fill="${C.cardAlt}"/>
     <text x="${PAD + 22}" y="${y + 30}" font-family="${ARABIC_FONT}" font-size="21" font-weight="600"
-          fill="${C.text}" direction="rtl">${esc(g.title)}</text>
+          fill="${C.text}" direction="${rtl ? "rtl" : "ltr"}">${esc(g.title)}</text>
     <text x="${PAD + 22}" y="${y + 53}" font-family="${ARABIC_FONT}" font-size="17"
           fill="${C.sub}" direction="${rtl ? "rtl" : "ltr"}">📚 ${esc(cleanSubjectName(g.subject, cleanNames) || "—")}</text>
     <text x="${PAD + W - 22}" y="${y + 30}" font-family="${ARABIC_FONT}" font-size="22" font-weight="700"
-          fill="${color}" text-anchor="end" direction="rtl">${esc(String(score))}/${esc(String(max))}</text>
+          fill="${color}" text-anchor="end" direction="${rtl ? "rtl" : "ltr"}">${esc(String(score))}/${esc(String(max))}</text>
     ${pct != null ? `<rect x="${PAD + W - 280}" y="${y + 40}" width="240" height="8" rx="4" fill="${C.line}"/>
     <rect x="${PAD + W - 280 + (240 - bar)}" y="${y + 40}" width="${bar}" height="8" rx="4" fill="${color}"/>` : ""}`;
     y += 72;
@@ -583,12 +583,12 @@ export async function renderGradesImage(grades, opts = {}) {
 
   if (!rows.length) {
     rows.push(`<text x="500" y="220" font-family="${ARABIC_FONT}" font-size="24" fill="${C.sub}"
-      text-anchor="middle" direction="rtl">لا توجد درجات بعد</text>`);
+      text-anchor="middle" direction="${rtl ? "rtl" : "ltr"}">لا توجد درجات بعد</text>`);
   }
 
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="${Math.max(y, 240)}" direction="${rtl ? "rtl" : "ltr"}">
     <rect width="1000" height="${Math.max(y, 240)}" fill="${C.bg}"/>
-    ${header("🏆 الدرجات", `${grades.length} درجة`)}
+    ${header("🏆 الدرجات", `${grades.length} درجة`, rtl)}
     ${rows.join("")}
   </svg>`;
   return { png: await toPng(svg), caption: `🏆 درجاتك (${grades.length})` };
@@ -634,13 +634,13 @@ export async function renderExamsImage(exams, opts = {}) {
     rows.push(`
     <rect x="${PAD}" y="${y}" width="${W}" height="80" rx="12" fill="${C.cardAlt}"/>
     <text x="500" y="${y + 48}" font-family="${ARABIC_FONT}" font-size="22" font-weight="600"
-          fill="${C.sub}" text-anchor="middle" direction="rtl">ما في اختبارات قادمة — ارتاح</text>`);
+          fill="${C.sub}" text-anchor="middle" direction="${rtl ? "rtl" : "ltr"}">ما في اختبارات قادمة — ارتاح</text>`);
     y += 94;
   }
 
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="${Math.max(y, 200)}" direction="${rtl ? "rtl" : "ltr"}">
     <rect width="1000" height="${Math.max(y, 200)}" fill="${C.bg}"/>
-    ${header("📄 الاختبارات", `${upcoming.length} اختبار قادم`)}
+    ${header("📄 الاختبارات", `${upcoming.length} اختبار قادم`, rtl)}
     ${rows.join("")}
   </svg>`;
   return { png: await toPng(svg), caption: `📄 ${upcoming.length} اختبار قادم` };
@@ -673,13 +673,13 @@ export async function renderMaterialsImage(materials, opts = {}) {
     rows.push(`
     <rect x="${PAD}" y="${y}" width="${W}" height="80" rx="12" fill="${C.cardAlt}"/>
     <text x="500" y="${y + 48}" font-family="${ARABIC_FONT}" font-size="22" font-weight="600"
-          fill="${C.sub}" text-anchor="middle" direction="rtl">ما في مواد جديدة</text>`);
+          fill="${C.sub}" text-anchor="middle" direction="${rtl ? "rtl" : "ltr"}">ما في مواد جديدة</text>`);
     y += 94;
   }
 
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="${Math.max(y, 200)}" direction="${rtl ? "rtl" : "ltr"}">
     <rect width="1000" height="${Math.max(y, 200)}" fill="${C.bg}"/>
-    ${header("📚 المواد", `${(materials || []).length} مادة`)}
+    ${header("📚 المواد", `${(materials || []).length} مادة`, rtl)}
     ${rows.join("")}
   </svg>`;
   return { png: await toPng(svg), caption: `📚 ${(materials || []).length} مادة` };
@@ -710,13 +710,13 @@ export async function renderNotificationsImage(notifications, opts = {}) {
     rows.push(`
     <rect x="${PAD}" y="${y}" width="${W}" height="80" rx="12" fill="${C.cardAlt}"/>
     <text x="500" y="${y + 48}" font-family="${ARABIC_FONT}" font-size="22" font-weight="600"
-          fill="${C.sub}" text-anchor="middle" direction="rtl">ما في إشعارات</text>`);
+          fill="${C.sub}" text-anchor="middle" direction="${rtl ? "rtl" : "ltr"}">ما في إشعارات</text>`);
     y += 94;
   }
 
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="${Math.max(y, 200)}" direction="${rtl ? "rtl" : "ltr"}">
     <rect width="1000" height="${Math.max(y, 200)}" fill="${C.bg}"/>
-    ${header("🔔 الإشعارات", `${list.length} أحدث إشعار`)}
+    ${header("🔔 الإشعارات", `${list.length} أحدث إشعار`, rtl)}
     ${rows.join("")}
   </svg>`;
   return { png: await toPng(svg), caption: `🔔 ${list.length} إشعار` };
