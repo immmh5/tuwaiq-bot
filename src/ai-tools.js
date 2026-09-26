@@ -148,6 +148,30 @@ export const TOOL_SPECS = [
   {
     type: "function",
     function: {
+      name: "send_exams_image",
+      description: "أرسل الاختبارات القادمة كصورة مع عدّاد الأيام المتبقية. استخدمها لما يطلب الاختبارات كصورة أو يسأل «كم باقي على الاختبار».",
+      parameters: { type: "object", properties: {}, required: [] },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "send_materials_image",
+      description: "أرسل المواد الدراسية كصورة مع نوع كل ملف. استخدمها لما يطلب المواد كصورة.",
+      parameters: { type: "object", properties: {}, required: [] },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "send_notifications_image",
+      description: "أرسل الإشعارات كصورة، غير المقروءة في الأعلى. استخدمها لما يطلب الإشعارات كصورة أو يسأل وش الجديد.",
+      parameters: { type: "object", properties: {}, required: [] },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "capture_page",
       description: "التقط صورة لصفحة من المنصة (schedule/assignments/grades/materials/exams/attendance/courses). خيار احتياطي لما يريد لقطة حقيقية من الموقع.",
       parameters: {
@@ -352,6 +376,29 @@ export async function runTool(name, args, accessToken, ctx = {}) {
       const items = (await fetchScope("grades", accessToken)) || [];
       if (!items.length) return { error: "no grades" };
       const { png, caption } = await renderGradesImage(items);
+      return { __photo: png, __caption: caption, count: items.length };
+    }
+    // The three scopes that gained images. Each returns the PNG the caller
+    // ships as a photo; the model only sees a small confirmation.
+    case "send_exams_image": {
+      const items = (await fetchScope("exams", accessToken)) || [];
+      if (!items.length) return { error: "no upcoming exams" };
+      const { renderExamsImage } = await import("./images.js");
+      const { png, caption } = await renderExamsImage(items);
+      return { __photo: png, __caption: caption, count: items.length };
+    }
+    case "send_materials_image": {
+      const items = (await fetchScope("materials", accessToken)) || [];
+      if (!items.length) return { error: "no materials" };
+      const { renderMaterialsImage } = await import("./images.js");
+      const { png, caption } = await renderMaterialsImage(items);
+      return { __photo: png, __caption: caption, count: items.length };
+    }
+    case "send_notifications_image": {
+      const items = (await fetchScope("notifications", accessToken)) || [];
+      if (!items.length) return { error: "no notifications" };
+      const { renderNotificationsImage } = await import("./images.js");
+      const { png, caption } = await renderNotificationsImage(items);
       return { __photo: png, __caption: caption, count: items.length };
     }
     // Raw capture of a platform page. Uses a real browser when one is

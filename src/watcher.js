@@ -198,12 +198,21 @@ export async function runCheckOnce() {
   checking = true;
   try {
     let accessToken = await ensureValidTokens();
-    const config = await getKv("watch_config", {
+    // A stored config from before notifications was watched returns without
+    // the key, which silently disabled the whole scope. Merge the defaults in
+    // so an old record still turns every scope on.
+    const storedConfig = await getKv("watch_config", {});
+    const config = {
       assignments: true,
       materials: true,
       exams: true,
       grades: true,
-    });
+      // notifications is what the platform's bell shows; without it here the
+      // scope is never fetched, so /img_notifications and /backup both see
+      // an empty list even when the student has unread alerts.
+      notifications: true,
+      ...storedConfig,
+    };
 
     const results = {};
     for (const scope of Object.keys({ assignments: 1, materials: 1, exams: 1, grades: 1 })) {

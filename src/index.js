@@ -793,12 +793,25 @@ function registerCommands() {
       const v = obj?.[key];
       if (v != null) lines.push(`${label}: <b>${escapeHtml(String(v))}</b>`);
     };
-    tryField(home, "pendingAssignments", "📝 واجبات للتسليم");
-    tryField(home, "dueSoon", "⏰ مستحقة قريبًا");
-    tryField(home, "overdue", "🔴 متأخرة");
-    tryField(home, "availableExams", "📄 اختبارات متاحة");
-    tryField(home, "newMaterials", "📚 مواد جديدة");
-    if (lines.length === 1) lines.push("<code>" + escapeHtml(JSON.stringify(home).slice(0, 800)) + "</code>");
+    // The dashboard payload nests under coursesSummary; read both shapes so a
+    // platform restructure doesn't dump raw JSON on the student.
+    const s = home?.coursesSummary || home?.summary || home;
+    tryField(s, "pendingAssignments", "📝 واجبات للتسليم");
+    tryField(s, "dueSoon", "⏰ مستحقة قريبًا");
+    tryField(s, "overdue", "🔴 متأخرة");
+    tryField(s, "availableExams", "📄 اختبارات متاحة");
+    tryField(s, "newMaterials", "📚 مواد جديدة");
+    tryField(s, "totalCourses", "📘 المواد");
+    tryField(s, "liveNow", "🟢 حصص الحين");
+    tryField(s, "todaySessions", "🗓 حصص اليوم");
+    if (lines.length === 1) {
+      // Nothing matched: show a trimmed hint instead of a wall of JSON, and
+      // point at the commands that do work for this data.
+      lines.push("<i>اللوحة ما رجعت ملخص واضح. جرّب:</i>");
+      lines.push("<code>/assignments_pending</code> — الواجبات");
+      lines.push("<code>/today</code> — حصص اليوم");
+      lines.push("<code>/courses</code> — المواد");
+    }
     await sendMessage(chatId, lines.join("\n"));
   });
 
@@ -932,6 +945,24 @@ function registerCommands() {
       tryField("الغياب", att.absences ?? att.absent ?? att.totalAbsent);
       tryField("التأخير", att.late ?? att.lateArrivals);
       tryField("الإجمالي", att.totalSessions ?? att.total);
+
+      // The platform answers {courses: [...], summary: {...}}: the summary
+      // holds the headline rates and each course carries its own. Falling
+      // through to the raw keys meant showing JSON instead of attendance.
+      if (lines.length === 1 && (att.courses?.length || att.summary)) {
+        if (att.summary) {
+          tryField("نسبة الحضور", att.summary.attendanceRate ?? att.summary.percentage);
+          tryField("الغياب", att.summary.absences ?? att.summary.absent);
+          tryField("الإجمالي", att.summary.totalSessions ?? att.summary.total);
+          lines.push("");
+        }
+        for (const c of (att.courses || []).slice(0, 10)) {
+          const name = c.subjectName || c.offeringTitle || c.name || "مادة";
+          const rate = c.attendanceRate ?? c.percentage ?? c.rate;
+          lines.push(`📘 <b>${esc(String(name))}</b> — ${rate != null ? esc(String(rate)) + "%" : "—"}`);
+        }
+      }
+
       if (lines.length === 1) {
         // Unknown shape — show the keys so we can adapt in the next iteration.
         lines.push(`<i>ما في بيانات واضحة. المفاتيح:</i>`);
