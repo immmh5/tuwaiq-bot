@@ -173,7 +173,9 @@ export const SETTING_NAMES = Object.keys(DEFAULTS);
 // button carries, so the main page can open a sub-page for one section.
 export const PANEL = [
   {
-    title: "🗓 الجدول",
+    // These four govern every image the bot draws, not just the table —
+    // direction, name cleaning, and the room all flow to each renderer.
+    title: "🖼 الصور",
     key: "schedule",
     items: ["schedule_orientation", "schedule_direction", "schedule_clean_names", "schedule_show_room"],
   },

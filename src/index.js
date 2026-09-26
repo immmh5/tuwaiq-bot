@@ -1689,7 +1689,17 @@ function registerCommands() {
         await sendMessage(chatId, "🖼 هذا النطاق ما عنده صورة الحين — جرّب <code>/img_site</code>.");
         return;
       }
-      const out = await render(items);
+      // The same orientation, direction and name-cleaning choices the panel
+      // exposes apply to every image, not just the grid — read them once
+      // here and hand them to whichever renderer this scope uses.
+      const imgCfg = await getSettings(chatId);
+      const imgOpts = {
+        orientation: imgCfg.schedule_orientation,
+        showRoom: imgCfg.schedule_show_room !== false,
+        direction: imgCfg.schedule_direction === "ltr" ? "ltr" : "rtl",
+        cleanNames: imgCfg.schedule_clean_names !== false,
+      };
+      const out = await render(items, imgOpts);
       await sendPhoto(chatId, out.png, out.caption);
     } catch (err) {
       await sendMessage(chatId, `⚠️ ما قدرت أصوّر: <code>${esc(err.message)}</code>`);

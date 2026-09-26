@@ -281,6 +281,25 @@ const norm = (v) => String(v || "").trim().toLowerCase();
 const isOverdue = (x) =>
   norm(x.status) === "pending" && !!x.dueAt && new Date(x.dueAt).getTime() < Date.now();
 
+// The image settings the panel exposes (direction, name cleaning, room) apply
+// to every renderer, so the tools read them the same way /img_* does. Kept
+// here rather than threaded through every call site because most tools never
+// render anything and should not carry the argument.
+async function imgOpts() {
+  try {
+    const { getSettings } = await import("./settings.js");
+    const cfg = await getSettings(process.env.TELEGRAM_CHAT_ID || null);
+    return {
+      orientation: cfg.schedule_orientation,
+      showRoom: cfg.schedule_show_room !== false,
+      direction: cfg.schedule_direction === "ltr" ? "ltr" : "rtl",
+      cleanNames: cfg.schedule_clean_names !== false,
+    };
+  } catch {
+    return {};
+  }
+}
+
 // Execute one tool call against the live platform.
 //
 // Action tools receive the chat id so they can change that chat's settings.
@@ -357,7 +376,7 @@ export async function runTool(name, args, accessToken, ctx = {}) {
     case "send_schedule_image": {
       const sessions = (await fetchScope("schedule", accessToken)) || [];
       if (!sessions.length) return { error: "no schedule" };
-      const { png, caption } = await renderScheduleImage(sessions);
+      const { png, caption } = await renderScheduleImage(sessions, await imgOpts());
       return { __photo: png, __caption: caption, count: sessions.length };
     }
     case "send_schedule_grid": {
@@ -375,7 +394,7 @@ export async function runTool(name, args, accessToken, ctx = {}) {
     case "send_grades_image": {
       const items = (await fetchScope("grades", accessToken)) || [];
       if (!items.length) return { error: "no grades" };
-      const { png, caption } = await renderGradesImage(items);
+      const { png, caption } = await renderGradesImage(items, await imgOpts());
       return { __photo: png, __caption: caption, count: items.length };
     }
     // The three scopes that gained images. Each returns the PNG the caller
@@ -384,21 +403,21 @@ export async function runTool(name, args, accessToken, ctx = {}) {
       const items = (await fetchScope("exams", accessToken)) || [];
       if (!items.length) return { error: "no upcoming exams" };
       const { renderExamsImage } = await import("./images.js");
-      const { png, caption } = await renderExamsImage(items);
+      const { png, caption } = await renderExamsImage(items, await imgOpts());
       return { __photo: png, __caption: caption, count: items.length };
     }
     case "send_materials_image": {
       const items = (await fetchScope("materials", accessToken)) || [];
       if (!items.length) return { error: "no materials" };
       const { renderMaterialsImage } = await import("./images.js");
-      const { png, caption } = await renderMaterialsImage(items);
+      const { png, caption } = await renderMaterialsImage(items, await imgOpts());
       return { __photo: png, __caption: caption, count: items.length };
     }
     case "send_notifications_image": {
       const items = (await fetchScope("notifications", accessToken)) || [];
       if (!items.length) return { error: "no notifications" };
       const { renderNotificationsImage } = await import("./images.js");
-      const { png, caption } = await renderNotificationsImage(items);
+      const { png, caption } = await renderNotificationsImage(items, await imgOpts());
       return { __photo: png, __caption: caption, count: items.length };
     }
     // Raw capture of a platform page. Uses a real browser when one is

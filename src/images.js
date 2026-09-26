@@ -101,6 +101,32 @@ function header(title, subtitle) {
   <rect x="0" y="118" width="1000" height="2" fill="${C.line}"/>`;
 }
 
+// Every image honours the same three choices the student sets once in the
+// panel: text direction, whether group suffixes get trimmed, and whether the
+// room shows. Renderers that never had a room just ignore that one.
+//
+// This used to be schedule-only; the panel still calls it "الجدول" but the
+// values apply to every renderer, so a student who reads right-to-left in
+// the table reads right-to-left everywhere.
+export function imageOpts(opts = {}) {
+  const direction = opts.direction === "ltr" ? "ltr" : "rtl";
+  const cleanNames = opts.cleanNames !== false;
+  const showRoom = opts.showRoom !== false;
+  return { direction, rtl: direction === "rtl", cleanNames, showRoom };
+}
+
+// Strip the trailing group marker the platform appends to subject names.
+// "احياء 2-1" → "احياء". Kept as a standalone helper because every renderer
+// needs the same treatment, and a student who turns it off wants it off
+// everywhere at once.
+export function cleanSubjectName(t, cleanNames = true) {
+  if (!cleanNames) return String(t ?? "");
+  return String(t ?? "")
+    .replace(/\s+\d+(?:\.\d+)?\s*[-–]\s*\d+(?:\.\d+)?\s*$/, "")
+    .replace(/\s+[-–]?\d+(?:\.\d+)?\s*$/, "")
+    .trim();
+}
+
 // ---- Schedule image ---------------------------------------------------------
 // ---- Schedule grid ----------------------------------------------------------
 // Mirrors the platform's own timetable layout: days as columns, times as
@@ -387,7 +413,8 @@ function groupSlots(sessions) {
   });
 }
 
-export async function renderScheduleImage(sessions) {
+export async function renderScheduleImage(sessions, opts = {}) {
+  const { rtl, cleanNames } = imageOpts(opts);
   const slots = groupSlots(sessions);
   const today = new Date().toISOString().slice(0, 10);
 
@@ -423,9 +450,9 @@ export async function renderScheduleImage(sessions) {
     rows.push(`
     <rect x="${PAD}" y="${y}" width="${W}" height="52" rx="12" fill="${isToday ? C.accent : C.card}" opacity="${isToday ? 0.18 : 1}"/>
     <text x="${PAD + 20}" y="${y + 35}" font-family="${ARABIC_FONT}" font-size="24" font-weight="700"
-          fill="${isToday ? C.accent : C.text}" direction="rtl">${esc(fmtDayName(day))}${isToday ? "  • اليوم" : ""}</text>
+          fill="${isToday ? C.accent : C.text}" direction="${rtl ? "rtl" : "ltr"}">${esc(fmtDayName(day))}${isToday ? "  • اليوم" : ""}</text>
     <text x="${PAD + W - 20}" y="${y + 35}" font-family="${ARABIC_FONT}" font-size="20"
-          fill="${C.sub}" text-anchor="end" direction="rtl">${activeCount} حصة</text>`);
+          fill="${C.sub}" text-anchor="end" direction="${rtl ? "rtl" : "ltr"}">${activeCount} حصة</text>`);
     y += 64;
 
     for (const s of list) {
@@ -439,19 +466,19 @@ export async function renderScheduleImage(sessions) {
       <rect x="${PAD}" y="${y}" width="${W}" height="${h}" rx="10" fill="${C.cardAlt}"/>
       <rect x="${PAD}" y="${y}" width="6" height="${h}" rx="3" fill="${accent}"/>
       <text x="${PAD + 22}" y="${y + 33}" font-family="${ARABIC_FONT}" font-size="22" font-weight="600"
-            fill="${C.text}" direction="rtl">${esc(s.title)}</text>
+            fill="${C.text}" direction="${rtl ? "rtl" : "ltr"}">${esc(cleanSubjectName(s.title, cleanNames))}</text>
       <text x="${PAD + W - 290}" y="${y + 33}" font-family="${ARABIC_FONT}" font-size="19"
-            fill="${C.sub}" text-anchor="end" direction="rtl">${esc(room)}</text>
+            fill="${C.sub}" text-anchor="end" direction="${rtl ? "rtl" : "ltr"}">${esc(room)}</text>
       <text x="${PAD + W - 22}" y="${y + 33}" font-family="${ARABIC_FONT}" font-size="19"
-            fill="${C.sub}" text-anchor="end" direction="rtl">${esc(time)}</text>`);
+            fill="${C.sub}" text-anchor="end" direction="${rtl ? "rtl" : "ltr"}">${esc(time)}</text>`);
       if (s.replacedBy) {
         rows.push(`
         <text x="${PAD + 22}" y="${y + 66}" font-family="${ARABIC_FONT}" font-size="17"
-              fill="${C.warn}" direction="rtl">↩ استُبدلت بـ: ${esc(s.replacedBy)}</text>`);
+              fill="${C.warn}" direction="${rtl ? "rtl" : "ltr"}">↩ استُبدلت بـ: ${esc(s.replacedBy)}</text>`);
       } else if (cancelled) {
         rows.push(`
         <text x="${PAD + 22}" y="${y + 33}" font-family="${ARABIC_FONT}" font-size="17"
-              fill="${C.bad}" direction="rtl">ملغاة</text>`);
+              fill="${C.bad}" direction="${rtl ? "rtl" : "ltr"}">ملغاة</text>`);
       }
       y += h + 10;
     }
@@ -459,7 +486,7 @@ export async function renderScheduleImage(sessions) {
   }
 
   const liveCount = slots.reduce((n, s) => n + (s.items.some((x) => x.status !== "cancelled") ? 1 : 0), 0);
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="${y}" direction="rtl">
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="${y}" direction="${rtl ? "rtl" : "ltr"}">
     <rect width="1000" height="${y}" fill="${C.bg}"/>
     ${header("🗓 الجدول الأسبوعي", `${liveCount} حصة فعلية في ${days.length} أيام`)}
     ${rows.join("")}
@@ -471,7 +498,8 @@ export async function renderScheduleImage(sessions) {
 }
 
 // ---- Assignments image -------------------------------------------------------
-export async function renderAssignmentsImage(assignments) {
+export async function renderAssignmentsImage(assignments, opts = {}) {
+  const { rtl, cleanNames } = imageOpts(opts);
   const pend = assignments.filter((a) => String(a.status).toLowerCase() === "pending");
   const graded = assignments.filter((a) => String(a.status).toLowerCase() === "graded");
   const rest = assignments.filter((a) => !pend.includes(a) && !graded.includes(a));
@@ -498,9 +526,9 @@ export async function renderAssignmentsImage(assignments) {
       <rect x="${PAD}" y="${y}" width="${W}" height="64" rx="10" fill="${C.cardAlt}"/>
       <rect x="${PAD}" y="${y}" width="6" height="64" rx="3" fill="${overdue ? C.bad : color}"/>
       <text x="${PAD + 22}" y="${y + 28}" font-family="${ARABIC_FONT}" font-size="22" font-weight="600"
-            fill="${C.text}" direction="rtl">${esc(a.title)}</text>
+            fill="${C.text}" direction="${rtl ? "rtl" : "ltr"}">${esc(a.title)}</text>
       <text x="${PAD + 22}" y="${y + 52}" font-family="${ARABIC_FONT}" font-size="18"
-            fill="${C.sub}" direction="rtl">📚 ${esc(a.subject || "—")}${overdue ? "  • متأخر" : ""}</text>
+            fill="${C.sub}" direction="${rtl ? "rtl" : "ltr"}">📚 ${esc(cleanSubjectName(a.subject, cleanNames) || "—")}${overdue ? "  • متأخر" : ""}</text>
       <text x="${PAD + W - 22}" y="${y + 30}" font-family="${ARABIC_FONT}" font-size="18"
             fill="${C.sub}" text-anchor="end" direction="rtl">⏰ ${esc(due)}</text>
       ${score ? `<text x="${PAD + W - 22}" y="${y + 54}" font-family="${ARABIC_FONT}" font-size="18"
@@ -514,7 +542,7 @@ export async function renderAssignmentsImage(assignments) {
   section("✅ المصحّحة", C.good, graded, true);
   section("📦 المُسلَّمة", C.sub, rest, false);
 
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="${Math.max(y, 200)}" direction="rtl">
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="${Math.max(y, 200)}" direction="${rtl ? "rtl" : "ltr"}">
     <rect width="1000" height="${Math.max(y, 200)}" fill="${C.bg}"/>
     ${header("📝 الواجبات", `${assignments.length} واجب — ${pend.length} معلّق`)}
     ${rows.join("")}
@@ -526,7 +554,8 @@ export async function renderAssignmentsImage(assignments) {
 }
 
 // ---- Grades image ------------------------------------------------------------
-export async function renderGradesImage(grades) {
+export async function renderGradesImage(grades, opts = {}) {
+  const { rtl, cleanNames } = imageOpts(opts);
   const PAD = 32;
   const W = 1000 - PAD * 2;
   let y = 140;
@@ -543,7 +572,7 @@ export async function renderGradesImage(grades) {
     <text x="${PAD + 22}" y="${y + 30}" font-family="${ARABIC_FONT}" font-size="21" font-weight="600"
           fill="${C.text}" direction="rtl">${esc(g.title)}</text>
     <text x="${PAD + 22}" y="${y + 53}" font-family="${ARABIC_FONT}" font-size="17"
-          fill="${C.sub}" direction="rtl">📚 ${esc(g.subject || "—")}</text>
+          fill="${C.sub}" direction="${rtl ? "rtl" : "ltr"}">📚 ${esc(cleanSubjectName(g.subject, cleanNames) || "—")}</text>
     <text x="${PAD + W - 22}" y="${y + 30}" font-family="${ARABIC_FONT}" font-size="22" font-weight="700"
           fill="${color}" text-anchor="end" direction="rtl">${esc(String(score))}/${esc(String(max))}</text>
     ${pct != null ? `<rect x="${PAD + W - 280}" y="${y + 40}" width="240" height="8" rx="4" fill="${C.line}"/>
@@ -557,7 +586,7 @@ export async function renderGradesImage(grades) {
       text-anchor="middle" direction="rtl">لا توجد درجات بعد</text>`);
   }
 
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="${Math.max(y, 240)}" direction="rtl">
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="${Math.max(y, 240)}" direction="${rtl ? "rtl" : "ltr"}">
     <rect width="1000" height="${Math.max(y, 240)}" fill="${C.bg}"/>
     ${header("🏆 الدرجات", `${grades.length} درجة`)}
     ${rows.join("")}
@@ -569,7 +598,8 @@ export async function renderGradesImage(grades) {
 // Exams are few and far between, so the card leads with the countdown and
 // puts the date and duration underneath — the question the student is
 // actually asking is "how much time do I have left", not "what is this exam".
-export async function renderExamsImage(exams) {
+export async function renderExamsImage(exams, opts = {}) {
+  const { rtl, cleanNames } = imageOpts(opts);
   const PAD = 32;
   const W = 1000 - PAD * 2;
   const now = Date.now();
@@ -591,13 +621,13 @@ export async function renderExamsImage(exams) {
     <rect x="${PAD}" y="${y}" width="${W}" height="86" rx="12" fill="${C.cardAlt}"/>
     <rect x="${PAD}" y="${y}" width="6" height="86" rx="3" fill="${urgent}"/>
     <text x="${PAD + 22}" y="${y + 34}" font-family="${ARABIC_FONT}" font-size="24" font-weight="700"
-          fill="${C.text}" direction="rtl">${esc(e.title || "اختبار")}</text>
+          fill="${C.text}" direction="${rtl ? "rtl" : "ltr"}">${esc(e.title || "اختبار")}</text>
     <text x="${PAD + 22}" y="${y + 66}" font-family="${ARABIC_FONT}" font-size="19"
-          fill="${C.sub}" direction="rtl">📚 ${esc(e.subject || "—")}  •  ⏱ ${esc(String(e.durationMin || "—"))} دقيقة</text>
+          fill="${C.sub}" direction="${rtl ? "rtl" : "ltr"}">📚 ${esc(cleanSubjectName(e.subject, cleanNames) || "—")}  •  ⏱ ${esc(String(e.durationMin || "—"))} دقيقة</text>
     <text x="${PAD + W - 22}" y="${y + 36}" font-family="${ARABIC_FONT}" font-size="20" font-weight="700"
-          fill="${urgent}" text-anchor="end" direction="rtl">${esc(label)}</text>
+          fill="${urgent}" text-anchor="end" direction="${rtl ? "rtl" : "ltr"}">${esc(label)}</text>
     <text x="${PAD + W - 22}" y="${y + 66}" font-family="${ARABIC_FONT}" font-size="17"
-          fill="${C.sub}" text-anchor="end" direction="rtl">${esc(fmtDayName(e.startsAt))}</text>`);
+          fill="${C.sub}" text-anchor="end" direction="${rtl ? "rtl" : "ltr"}">${esc(fmtDayName(e.startsAt))}</text>`);
     y += 100;
   }
   if (!upcoming.length) {
@@ -608,7 +638,7 @@ export async function renderExamsImage(exams) {
     y += 94;
   }
 
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="${Math.max(y, 200)}" direction="rtl">
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="${Math.max(y, 200)}" direction="${rtl ? "rtl" : "ltr"}">
     <rect width="1000" height="${Math.max(y, 200)}" fill="${C.bg}"/>
     ${header("📄 الاختبارات", `${upcoming.length} اختبار قادم`)}
     ${rows.join("")}
@@ -620,7 +650,8 @@ export async function renderExamsImage(exams) {
 // Materials are the longest list on the platform, so the image shows the most
 // recent ones with their type — the student is usually looking for "that file
 // the teacher just uploaded", not the whole bibliography.
-export async function renderMaterialsImage(materials) {
+export async function renderMaterialsImage(materials, opts = {}) {
+  const { rtl, cleanNames } = imageOpts(opts);
   const PAD = 32;
   const W = 1000 - PAD * 2;
   let y = 140;
@@ -631,11 +662,11 @@ export async function renderMaterialsImage(materials) {
     <rect x="${PAD}" y="${y}" width="${W}" height="70" rx="10" fill="${C.cardAlt}"/>
     <rect x="${PAD}" y="${y}" width="6" height="70" rx="3" fill="${C.accent}"/>
     <text x="${PAD + 22}" y="${y + 32}" font-family="${ARABIC_FONT}" font-size="21" font-weight="600"
-          fill="${C.text}" direction="rtl">${esc(m.title || "مادة")}</text>
+          fill="${C.text}" direction="${rtl ? "rtl" : "ltr"}">${esc(m.title || "مادة")}</text>
     <text x="${PAD + 22}" y="${y + 56}" font-family="${ARABIC_FONT}" font-size="17"
-          fill="${C.sub}" direction="rtl">📚 ${esc(m.subject || "—")}</text>
+          fill="${C.sub}" direction="${rtl ? "rtl" : "ltr"}">📚 ${esc(cleanSubjectName(m.subject, cleanNames) || "—")}</text>
     <text x="${PAD + W - 22}" y="${y + 34}" font-family="${ARABIC_FONT}" font-size="18"
-          fill="${C.sub}" text-anchor="end" direction="rtl">${icon} ${esc(String(m.contentType || "ملف"))}</text>`);
+          fill="${C.sub}" text-anchor="end" direction="${rtl ? "rtl" : "ltr"}">${icon} ${esc(String(m.contentType || "ملف"))}</text>`);
     y += 82;
   }
   if (!rows.length) {
@@ -646,7 +677,7 @@ export async function renderMaterialsImage(materials) {
     y += 94;
   }
 
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="${Math.max(y, 200)}" direction="rtl">
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="${Math.max(y, 200)}" direction="${rtl ? "rtl" : "ltr"}">
     <rect width="1000" height="${Math.max(y, 200)}" fill="${C.bg}"/>
     ${header("📚 المواد", `${(materials || []).length} مادة`)}
     ${rows.join("")}
@@ -657,7 +688,8 @@ export async function renderMaterialsImage(materials) {
 // ---- Notifications image -------------------------------------------------------
 // The notification list is what the platform's bell shows; the image keeps
 // unread ones on top and marks them, so a glance answers "what did I miss".
-export async function renderNotificationsImage(notifications) {
+export async function renderNotificationsImage(notifications, opts = {}) {
+  const { rtl, cleanNames } = imageOpts(opts);
   const PAD = 32;
   const W = 1000 - PAD * 2;
   const list = (notifications || []).slice(0, 10);
@@ -669,9 +701,9 @@ export async function renderNotificationsImage(notifications) {
     <rect x="${PAD}" y="${y}" width="${W}" height="74" rx="10" fill="${C.cardAlt}"/>
     <rect x="${PAD}" y="${y}" width="6" height="74" rx="3" fill="${unread ? C.accent : C.line}"/>
     <text x="${PAD + 22}" y="${y + 32}" font-family="${ARABIC_FONT}" font-size="21" font-weight="${unread ? "700" : "500"}"
-          fill="${C.text}" direction="rtl">${esc(n.title || "إشعار")}${unread ? "  •" : ""}</text>
+          fill="${C.text}" direction="${rtl ? "rtl" : "ltr"}">${esc(n.title || "إشعار")}${unread ? "  •" : ""}</text>
     <text x="${PAD + 22}" y="${y + 58}" font-family="${ARABIC_FONT}" font-size="16"
-          fill="${C.sub}" direction="rtl">${esc(String(n.body || "").slice(0, 90))}</text>`);
+          fill="${C.sub}" direction="${rtl ? "rtl" : "ltr"}">${esc(String(n.body || "").slice(0, 90))}</text>`);
     y += 86;
   }
   if (!rows.length) {
@@ -682,7 +714,7 @@ export async function renderNotificationsImage(notifications) {
     y += 94;
   }
 
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="${Math.max(y, 200)}" direction="rtl">
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="${Math.max(y, 200)}" direction="${rtl ? "rtl" : "ltr"}">
     <rect width="1000" height="${Math.max(y, 200)}" fill="${C.bg}"/>
     ${header("🔔 الإشعارات", `${list.length} أحدث إشعار`)}
     ${rows.join("")}
