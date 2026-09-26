@@ -141,7 +141,7 @@ async function answerWithAI(chatId, question) {
     // staring at "ثواني…" forever. Two minutes is generous for a multi-tool
     // answer and still tells them something went wrong.
     const res = await Promise.race([
-      askAI(question, { accessToken: tokens.accessToken, history }),
+      askAI(question, { accessToken: tokens.accessToken, history, chatId }),
       new Promise((_, rej) =>
         setTimeout(() => rej(new Error("انتهى وقت الجواب (دقيقتين)")), 120000)
       ),

@@ -111,6 +111,10 @@ async function chatOnce(messages, cfg, { tools } = {}) {
 const MAX_ROUNDS = 6;
 
 export async function askAI(userQuestion, opts = {}) {
+  // chatId travels to the tools so settings changes and command dispatches
+  // land in the right conversation. Without it the action tools throw
+  // "chatId is not defined" and the model reports a technical failure.
+  const chatId = opts.chatId || null;
   const cfg = aiConfig();
   if (!cfg.enabled) {
     return {
@@ -127,7 +131,7 @@ export async function askAI(userQuestion, opts = {}) {
   const history = opts.history || [];
 
   try {
-    return await askWithTools(userQuestion, cfg, accessToken, history);
+    return await askWithTools(userQuestion, cfg, accessToken, history, { chatId });
   } catch (err) {
     // Some providers reject the tools array outright (400) or don't return
     // tool_calls. Fall back to the snapshot design so the bot still answers.
@@ -147,7 +151,7 @@ export async function askAI(userQuestion, opts = {}) {
 // Image tools (renderScheduleImage etc.) return a PNG the caller sends.
 let pendingPhoto = null;
 
-async function askWithTools(userQuestion, cfg, accessToken, history = []) {
+async function askWithTools(userQuestion, cfg, accessToken, history = [], toolCtx = {}) {
   pendingPhoto = null;
   const messages = [
     { role: "system", content: SYSTEM_PROMPT },
@@ -193,7 +197,7 @@ async function askWithTools(userQuestion, cfg, accessToken, history = []) {
       }
       let result;
       try {
-        result = await runTool(tc.function.name, args, accessToken, { chatId });
+        result = await runTool(tc.function.name, args, accessToken, { chatId: toolCtx.chatId });
       } catch (err) {
         result = { error: err.message };
       }
