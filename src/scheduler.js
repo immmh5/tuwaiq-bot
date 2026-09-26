@@ -12,9 +12,9 @@
 import { getKv, setKv, getTokens } from "./store.js";
 import { fetchScope } from "./watcher.js";
 import { getSettings } from "./settings.js";
-// esc is the HTML-escaper shared by every formatter; without it Arabic titles
-// carrying < > & would break Telegram's parse mode.
-import { esc } from "./format.js";
+// escapeHtml is the escaper every formatter uses; scheduler composes its own
+// messages so it needs it directly rather than relying on a local alias.
+import { escapeHtml as esc } from "./format.js";
 
 // The Arab week starts on Sunday, and school days are Sunday–Thursday.
 const WEEKDAY_NAMES = ["الأحد", "الإثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة", "السبت"];
@@ -124,8 +124,11 @@ async function maybeMorning(now, send) {
   }
 
   state.morningDate = today;
-  await saveState(state);
+  // Send first, then persist: a failed flush must not consume today's
+  // briefing. If the send throws, morningDate stays unset and the next
+  // tick tries again.
   await send(lines.join("\n"));
+  await saveState(state);
   return true;
 }
 
@@ -184,10 +187,12 @@ async function maybeExamAlerts(now, send) {
     );
 
     await send(lines.join("\n"));
+    // Record only after the send succeeds, so a dropped message retries on
+    // the next tick rather than being marked done and never repeated.
+    await saveState(state);
     fired++;
   }
 
-  if (fired) await saveState(state);
   return fired;
 }
 
@@ -205,7 +210,7 @@ async function maybeGradeDeltas(now, send) {
   const state = await loadState();
   const prev = state.lastGrades || {};
   const byKey = {};
-  let moved = 0;
+  const toSend = [];
 
   for (const g of grades) {
     const id = String(g.id || `${g.title}|${g.subject}`);
@@ -214,7 +219,6 @@ async function maybeGradeDeltas(now, send) {
     if (!before || before.score == null || g.score == null) continue;
     if (Number(before.score) === Number(g.score)) continue;
 
-    moved++;
     const delta = Number(g.score) - Number(before.score);
     const sign = delta > 0 ? "+" : "";
     const pct =
@@ -229,12 +233,16 @@ async function maybeGradeDeltas(now, send) {
       `📚 ${esc(g.subject || "")}`,
       `السابق: <code>${before.score}</code> → الجديد: <code>${g.score}</code> <b>(${sign}${delta})</b>${pct}`,
     ];
-    await send(lines.join("\n"));
+    toSend.push(lines.join("\n"));
   }
+
+  // Flush everything before recording the baseline: if the send fails, the
+  // deltas stay un-recorded and the next tick re-reports them.
+  for (const text of toSend) await send(text);
 
   state.lastGrades = byKey;
   await saveState(state);
-  return moved;
+  return toSend.length;
 }
 
 // The tokens are refreshed by the watcher; the scheduler reads whatever is

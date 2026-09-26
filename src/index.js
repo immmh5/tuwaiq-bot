@@ -413,6 +413,29 @@ function registerCommands() {
     await sendPhoto(chatId, out.png, `${out.caption} — ${LABELS.schedule_direction[next]}`);
   });
 
+  // /health is the web endpoint the self-ping hits. Students reach for it as
+  // a command too, so answer with the same state instead of "unknown
+  // command" — no login gate, since it is the thing to try when login is
+  // precisely what is broken.
+  guarded("/health", async ({ chatId }) => {
+    const state = getWatcherState();
+    const tokens = await getTokens();
+    const creds = await getCredentials();
+    const lines = [
+      "<b>💚 صحة البوت</b>",
+      `الدخول: ${creds ? "✅ مسجّل" : "❌ غير مسجّل"}`,
+      `الجلسة: ${tokens?.accessExpiresAt > Date.now() / 1000 ? "✅ سارية" : "⚠️ تحتاج تجديد"}`,
+      `المراقبة: ${state.running ? "✅ شغّالة" : "⛔ متوقفة"}`,
+      `آخر فحص: ${state.lastCheck ? new Date(state.lastCheck).toLocaleString("ar-SA", { timeZone: "Asia/Riyadh" }) : "لم يفحص بعد"}`,
+      `الوضع: ${botMode() === "public" ? "🌐 عام" : "🔒 خاص"}`,
+    ];
+    if (state.lastError) lines.push(`⚠️ آخر خطأ: <code>${escapeHtml(state.lastError)}</code>`);
+    if (!state.running) {
+      lines.push("", "<i>المراقبة متوقفة — اكتب /check لفحصة فورية، أو /status للتفاصيل.</i>");
+    }
+    await sendMessage(chatId, lines.join("\n"));
+  });
+
   guarded("/status", async ({ chatId }) => {
     if (!(await requireLogin(chatId))) return;
     const state = getWatcherState();
@@ -714,7 +737,8 @@ function registerCommands() {
 
   // Manual test of the proactive notifications: runs the scheduler once and
   // shows what fired, so the student can verify the morning briefing or the
-  // exam countdown without waiting for 06:30.
+  // exam countdown without waiting for 06:30. It sends directly rather than
+  // through the queue, since the point is immediate feedback.
   guarded("/proactive", async ({ chatId }) => {
     if (!(await requireLogin(chatId))) return;
     await sendMessage(chatId, "📣 أجرب التنبيهات الذكية الحين…").catch(() => {});
@@ -726,9 +750,14 @@ function registerCommands() {
           chatId,
           "✅ كل التنبيهات إما وصلت مسبقًا أو ما في شي جديد.\n\n<i>الصباحية تأتي مرة في اليوم، والاختبارات تتذكّر مرة واحدة لكل موعد.</i>"
         );
+      } else {
+        await sendMessage(
+          chatId,
+          `✅ أرسلت: ${res.morning ? "صباحية " : ""}${res.exams ? `${res.exams} تنبيه اختبار ` : ""}${res.grades ? `${res.grades} تغيّر درجة` : ""}`
+        );
       }
     } catch (err) {
-      await sendMessage(chatId, `⚠️ ما قدرت: <code>${esc(err.message)}</code>`);
+      await sendMessage(chatId, `⚠️ ما قدرت: <code>${escapeHtml(err.message)}</code>`);
     }
   });
 
@@ -1681,6 +1710,7 @@ const HELP_TEXT = `<b>🤖 أوامر بوت طويق</b>
 
 <b>🛠 التحكم:</b>
 /status — حالة البوت
+/health — 💚 صحة البوت (شغال؟)
 /check — فحص فوري
 /fresh — ✅ أثبت إن البيانات من المنصة الحين
 /settings — ⚙️ لوحة الإعدادات (أزرار)

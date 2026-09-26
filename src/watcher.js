@@ -131,6 +131,68 @@ export async function fetchScope(scope, accessToken) {
   }
 }
 
+// --- one place everything announces through ---------------------------------
+//
+// Without this, a single check cycle sends up to four separate messages: one
+// per fresh item batch, one per deadline milestone, and whatever the scheduler
+// wants to say. Collected here and flushed once, the student reads one
+// notification instead of a burst, and the ordering is deterministic.
+let pendingQueue = [];
+let flushTimer = null;
+let flushing = false;
+
+export function queueNotify(text) {
+  if (!text) return;
+  pendingQueue.push(text);
+  scheduleFlush();
+}
+
+// Multiple ticks can land in the same window (a check running while the
+// scheduler fires). Debounce by a beat so they all leave together.
+function scheduleFlush() {
+  if (flushTimer) return;
+  flushTimer = setTimeout(() => {
+    flushTimer = null;
+    flushQueue();
+  }, 2500);
+}
+
+export async function flushQueue() {
+  // Re-entrancy guard: two timers could both see a non-empty queue.
+  if (flushing) return;
+  const items = pendingQueue.splice(0);
+  if (!items.length) return;
+  flushing = true;
+  try {
+    const chatId = process.env.TELEGRAM_CHAT_ID;
+    if (!chatId) return;
+    // Telegram caps a message at 4096 characters; split on block boundaries
+    // and never mid-item.
+    const blocks = [];
+    let cur = [];
+    let len = 0;
+    for (const text of items) {
+      const n = text.length;
+      if (len + n + 4 > 3500 && cur.length) {
+        blocks.push(cur.join("\n\n"));
+        cur = [];
+        len = 0;
+      }
+      cur.push(text);
+      len += n + 4;
+    }
+    if (cur.length) blocks.push(cur.join("\n\n"));
+    for (const b of blocks) await sendMessage(chatId, b);
+  } catch (err) {
+    console.error("flush failed:", err.message);
+    // Put them back so nothing is lost to a transient Telegram error.
+    pendingQueue = items.concat(pendingQueue);
+    scheduleFlush();
+  } finally {
+    flushing = false;
+  }
+}
+
 export async function runCheckOnce() {
   if (checking) return { skipped: true };
   checking = true;
@@ -235,13 +297,13 @@ async function checkDeadlineReminders(assignments) {
       ? `🔴 <b>فاتك الواجب!</b> تأخر <b>${hours} ساعة</b>`
       : `⏰ <b>باقي أقل من ٢٤ ساعة</b> — حوالي ${hours} ساعة`;
 
-    await notifyOwner(
+    await queueNotify(
       `${urgent}\n\n` +
         `📝 <b>${escapeHtml(a.title || "واجب")}</b>\n` +
         `📚 ${escapeHtml(a.subject || "—")}\n` +
         `⏰ الاستحقاق: <code>${fmtDate(a.dueAt)}</code>\n\n` +
         `<i>عشان أسكت عنه، سلّمه أو اطلب مني أساعدك بالتنظيم.</i>`
-    ).catch((e) => console.error("reminder failed:", e.message));
+    );
 
     sent[key] = milestone;
   }
@@ -284,11 +346,9 @@ async function notifyFresh(fresh) {
     lines.push(formatItem(scope, item));
     await markSeen(item); // mark before sending so a crash never re-notifies
   }
-  // Chunk to respect Telegram's 4096 char limit
-  const chunks = chunkLines(lines, 3500);
-  for (const chunk of chunks) {
-    await notifyOwner(chunk);
-  }
+  // Queue the whole batch as one block; the flush merges it with anything
+  // else this cycle produced.
+  queueNotify(lines.join("\n\n"));
 }
 
 function chunkLines(lines, maxChars) {
@@ -386,15 +446,11 @@ export async function startWatcher() {
     // The clock-driven features (morning briefing, exam countdown, grade
     // deltas) ride the same tick. They are individually gated by settings,
     // and each one records what it already announced, so nothing repeats.
+    // They queue through the same collector as the fresh items and the
+    // deadline reminders, so one cycle yields one message.
     try {
       const { runScheduler } = await import("./scheduler.js");
-      const { sendMessage } = await import("./telegram.js");
-      const chatId = process.env.TELEGRAM_CHAT_ID;
-      if (chatId) {
-        await runScheduler({
-          send: (text) => sendMessage(chatId, text),
-        });
-      }
+      await runScheduler({ send: (text) => queueNotify(text) });
     } catch (err) {
       console.error("scheduler tick error:", err.message);
     }
