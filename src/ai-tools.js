@@ -286,6 +286,33 @@ export const TOOL_SPECS = [
   {
     type: "function",
     function: {
+      // The student's curriculum questions — "في أي درس احنا؟", "وش المهم
+      // اللي قاله الاستاذ؟" — all route through this one read.
+      name: "curriculum_today",
+      description: "فهرس المنهج: دروس اليوم، أحدث درس لكل مادة، ووش المرفوع جديد. استخدمها لأي سؤال عن المنهج أو الدروس أو الوضع الحين.",
+      parameters: { type: "object", properties: {}, required: [] },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "curriculum_course",
+      description: "كل دروس مادة معينة بالترتيب من الأحدث للأقدم. استخدمها لما يسأل عن مادة بعينها: وش أخذنا، وين وصلنا، أبغى روابط الدروس.",
+      parameters: {
+        type: "object",
+        properties: {
+          course: {
+            type: "string",
+            description: "اسم المادة بالعربي، مثل: أحياء، كيمياء، رياضيات",
+          },
+        },
+        required: ["course"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "set_mega_enabled",
       description: "شغّل أو أوقف رفع النسخ الاحتياطية لـ MEGA.",
       parameters: {
@@ -297,7 +324,10 @@ export const TOOL_SPECS = [
   },
 ];
 
-const isoDay = (d) => d.toISOString().slice(0, 10);
+// Today's date as an ISO string. The platform stores dates in UTC but labels
+// them in Saudi time, so the day boundary is UTC+3 — without the offset,
+// 23:00 local still counts as tomorrow and a lesson due today reads as late.
+const isoDay = (d) => new Date(d.getTime() + 180 * 60000).toISOString().slice(0, 10);
 
 // The platform sends statuses capitalised ("Pending", "Submitted", "Graded").
 // Tool args arrive lowercase, so compare case-insensitively — otherwise a
@@ -327,6 +357,21 @@ async function imgOpts() {
   }
 }
 
+
+// Case- and diacritic-insensitive comparison for Arabic subject names: the
+// student writes "أحياء", the platform stores "احياء 2-1", and these should
+// match. Normalises alef variants, removes the dots and the group suffix.
+function normalize(s) {
+  return String(s || "")
+    .replace(/[أإآ]/g, "ا")
+    .replace(/ى/g, "ي")
+    .replace(/ة/g, "ه")
+    .replace(/[ً-ْـ]/g, "")
+    .replace(/\s+\d+(?:\.\d+)?\s*[-–]\s*\d+(?:\.\d+)?\s*$/, "")
+    .replace(/\s+[-–]?\d+(?:\.\d+)?\s*$/, "")
+    .trim()
+    .toLowerCase();
+}
 
 // The schedule as this student sees it: the platform's list minus the classes
 // they hid. The AI tools go through here so a phantom class the student
@@ -570,6 +615,42 @@ export async function runTool(name, args, accessToken, ctx = {}) {
       const { listReminders, fmtReminder } = await import("./reminders.js");
       const rows = await listReminders(chatId);
       return { ok: true, count: rows.length, reminders: rows.map((r) => ({ body: r.body, at: fmtReminder(r) })) };
+    }
+    case "curriculum_today": {
+      const { getIndex, digestForModel } = await import("./curriculum.js");
+      const index = await getIndex(chatId);
+      if (!index) {
+        // Nothing indexed yet: build it on demand from a live scan so the
+        // first curriculum question does not answer "ما عندي شي" forever.
+        try {
+          const { buildIndex, saveIndex } = await import("./curriculum.js");
+          const [materials, courses, schedule] = await Promise.all([
+            fetchScope("materials", accessToken),
+            fetchScope("courses", accessToken),
+            fetchScope("schedule", accessToken),
+          ]);
+          const built = buildIndex(materials || [], courses || []);
+          await saveIndex(chatId, built);
+          return { ok: true, digest: digestForModel(built, schedule, isoDay(new Date())) };
+        } catch (err) {
+          return { error: `ما قدرت أبني فهرس المنهج: ${err.message}` };
+        }
+      }
+      const schedule = await fetchScope("schedule", accessToken).catch(() => []);
+      return { ok: true, digest: digestForModel(index, schedule, isoDay(new Date())) };
+    }
+    case "curriculum_course": {
+      const { getIndex } = await import("./curriculum.js");
+      const index = await getIndex(chatId);
+      const want = String(a.course || "").trim();
+      if (!index || !index.byCourse) return { ok: false, lessons: [] };
+      // Match on the cleaned name so "أحياء" finds "احياء 2-1" — the student
+      // says the subject, not the platform's group label.
+      const key = Object.keys(index.byCourse).find(
+        (k) => normalize(k) === normalize(want) || normalize(k).includes(normalize(want)),
+      );
+      const rows = key ? index.byCourse[key] : [];
+      return { ok: true, course: key || want, lessons: rows.slice(0, 12), total: rows.length };
     }
     default:
       return { error: `unknown tool: ${name}` };

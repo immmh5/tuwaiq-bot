@@ -228,6 +228,21 @@ export async function runCheckOnce() {
       }
     }
 
+    // Rebuild the curriculum index from the materials just fetched, so the
+    // bot's map of the term is never stale when the student asks what lesson
+    // they are on. The schedule is needed for "today's lessons".
+    try {
+      const chatId = process.env.TELEGRAM_CHAT_ID || null;
+      if (chatId && Array.isArray(results.materials)) {
+        const { buildIndex, saveIndex } = await import("./curriculum.js");
+        const schedule = await fetchScope("schedule", accessToken).catch(() => []);
+        const courses = await fetchScope("courses", accessToken).catch(() => []);
+        await saveIndex(chatId, buildIndex(results.materials, courses));
+      }
+    } catch (err) {
+      console.error("curriculum index failed:", err.message);
+    }
+
     const fresh = await collectFreshItems(results);
     await notifyFresh(fresh);
 

@@ -891,6 +891,76 @@ function registerCommands() {
     await sendMessage(chatId, n ? `🧹 مسحت ${n} تذكير.` : "⏰ ما كان فيه تذكيرات أصلاً.");
   });
 
+  // --- Curriculum -----------------------------------------------------------
+  // The bot's map of the term: one block per course, newest lesson first.
+  // This is what "في أي درس احنا" is answered from, and it is what the AI
+  // reads when the student asks in their own words.
+  guarded("/curriculum", async ({ chatId, args }) => {
+    if (!(await requireLogin(chatId))) return;
+    const { getIndex, buildIndex, saveIndex } = await import("./curriculum.js");
+    let index = await getIndex(chatId);
+    if (!index) {
+      const tokens = await getTokens();
+      const materials = await fetchScope("materials", tokens.accessToken);
+      const courses = await fetchScope("courses", tokens.accessToken);
+      index = await saveIndex(chatId, buildIndex(materials, courses));
+    }
+    const want = (args[0] || "").trim();
+    const courses = Object.keys(index.byCourse);
+    if (!courses.length) {
+      await sendMessage(chatId, "📚 ما عندي درسات مفهرسة الحين. تأكد إن المنصة فيها مواد.");
+      return;
+    }
+    // A named course shows just that course; bare /curriculum shows them all,
+    // capped because a full term does not fit one message.
+    const show = want ? courses.filter((c) => c.includes(want)) : courses;
+    const lines = ["<b>📚 فهرس المنهج</b>"];
+    for (const c of show.slice(0, want ? 1 : 8)) {
+      const rows = index.byCourse[c].slice(0, want ? 15 : 3);
+      lines.push(`\n📘 <b>${esc(c)}</b> <i>(${index.byCourse[c].length} درس)</i>`);
+      for (const r of rows) {
+        const when = r.date ? ` <i>${esc(fmtDay(r.date))}</i>` : "";
+        lines.push(`   ${esc(r.type)} · ${esc(r.title)}${when}`);
+      }
+    }
+    if (!show.length) {
+      await sendMessage(chatId, `📚 ما عندي مادة اسمها <code>${esc(want)}</code>.\nاللي عندي: ${courses.map(esc).join("، ")}`);
+      return;
+    }
+    lines.push(`\n<i>روابط كل درس: /links${want ? ` ${want}` : ""}</i>`);
+    await sendMessage(chatId, lines.join("\n"));
+  });
+
+  // The link list the student asked for: every lesson's file or external URL,
+  // grouped by course, so a specific handout is one tap away.
+  guarded("/links", async ({ chatId, args }) => {
+    if (!(await requireLogin(chatId))) return;
+    const { getIndex } = await import("./curriculum.js");
+    const index = await getIndex(chatId);
+    if (!index || !index.byCourse) {
+      await sendMessage(chatId, "📚 ما عندي فهرس بعد. جرّب <code>/curriculum</code> الأول.");
+      return;
+    }
+    const want = (args[0] || "").trim();
+    const courses = Object.keys(index.byCourse);
+    const show = want ? courses.filter((c) => c.includes(want)) : courses;
+    if (!show.length) {
+      await sendMessage(chatId, `📚 ما عندي مادة اسمها <code>${esc(want)}</code>.`);
+      return;
+    }
+    const lines = ["<b>🔗 روابط الدروس</b>"];
+    for (const c of show) {
+      const rows = index.byCourse[c].filter((r) => r.link);
+      if (!rows.length) continue;
+      lines.push(`\n📘 <b>${esc(c)}</b>`);
+      for (const r of rows.slice(0, 10)) {
+        // fileUrl is the platform's own S3; externalUrl is a third-party link.
+        lines.push(`   <a href="${esc(r.link)}">${esc(r.title)}</a> <i>(${esc(r.type)})</i>`);
+      }
+    }
+    await sendMessage(chatId, lines.join("\n") || "🔗 ما في روابط محفوظة.");
+  });
+
   guarded("/reset", async ({ chatId }) => {
     await resetSeen();
     await sendMessage(chatId, "🧹 مُسح سجل المراقبة. كل عنصر سيعُد جديدًا في الفحصة الجاية.");
