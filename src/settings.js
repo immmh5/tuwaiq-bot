@@ -61,6 +61,13 @@ const DEFAULTS = {
   // --- Display --------------------------------------------------------------
   // 24-hour clock everywhere, since the platform is Arabic-locale.
   time_format: "24h",
+  // --- Hidden classes -------------------------------------------------------
+  // Session keys the student asked the bot to drop from the schedule. The
+  // platform occasionally books two classes into the same slot — its own
+  // grid draws both stacked at the same offset — and only the student knows
+  // which one is real. Each key is "date|startTime" so hiding survives the
+  // platform renumbering its session ids. Every schedule view filters these.
+  schedule_hidden: [],
   // --- Proactive notifications ---------------------------------------------
   // These are the clock-driven messages: the morning briefing, the exam
   // countdown, and the grade-change report. All default on and all flip off
@@ -146,6 +153,46 @@ export async function setSetting(chatId, name, value) {
   all[name] = value;
   await setKv(KEY(chatId), all);
   return all;
+}
+
+// The key that identifies a class slot across platform renumberings: the day
+// and the start time. Two records sharing it are the platform double-booking
+// the same slot, which it does often enough that the student needs a way to
+// say which one is theirs.
+export function sessionKey(s) {
+  const date = s.date || s.sessionDate || "";
+  const start = s.startTime || "";
+  return `${String(date).slice(0, 10)}|${String(start).slice(0, 5)}`;
+}
+
+// Drop the classes this chat has hidden. Every schedule view calls this —
+// the text list, the day cards, the grid image, and the backup — so hiding
+// a phantom class removes it everywhere at once instead of from one view.
+export function filterHidden(items, hidden) {
+  if (!Array.isArray(hidden) || !hidden.length) return items || [];
+  const drop = new Set(hidden);
+  return (items || []).filter((s) => !drop.has(sessionKey(s)));
+}
+
+// Find slots the platform booked twice. Returns [{key, date, start, items}]
+// so the caller can show the student exactly which classes clash and offer a
+// button per side. Only flags live (non-cancelled) classes, since a
+// cancelled class stacked on its replacement is the normal, correct state.
+export function findConflicts(items) {
+  const seen = new Map();
+  for (const s of items || []) {
+    if (String(s.status || "").toLowerCase() === "cancelled") continue;
+    const k = sessionKey(s);
+    if (!k.startsWith("2")) continue; // no parseable date → nothing to compare
+    if (!seen.has(k)) seen.set(k, []);
+    seen.get(k).push(s);
+  }
+  return [...seen.values()].filter((g) => g.length > 1).map((g) => ({
+    key: sessionKey(g[0]),
+    date: String(g[0].date || g[0].sessionDate || "").slice(0, 10),
+    start: g[0].startTime,
+    items: g,
+  }));
 }
 
 // Cycle a setting through its allowed values — used by toggle buttons.

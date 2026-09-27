@@ -24,6 +24,9 @@ import {
   SETTING_NAMES,
   SETTING_HINTS,
   PANEL,
+  sessionKey,
+  filterHidden,
+  findConflicts,
 } from "./settings.js";
 import { runCheckOnce, getWatcherState, startWatcher, notifyOwner, fetchScope } from "./watcher.js";
 import { getMyAssignments, getStudentHome, getUnreadCount, getMyAttendance, normalizeAssignments } from "./tuwaiq.js";
@@ -383,8 +386,11 @@ function registerCommands() {
   // table and can flip its orientation without leaving the chat.
   async function rerenderGrid(chatId, cfg) {
     const tokens = await getTokens();
-    const items = (await fetchScope("schedule", tokens.accessToken)).filter(
-      (s) => String(s.status || "").toLowerCase() !== "cancelled"
+    const items = filterHidden(
+      (await fetchScope("schedule", tokens.accessToken)).filter(
+        (s) => String(s.status || "").toLowerCase() !== "cancelled"
+      ),
+      cfg.schedule_hidden,
     );
     const { renderScheduleGridImage } = await import("./images.js");
     return renderScheduleGridImage(items, {
@@ -411,6 +417,29 @@ function registerCommands() {
     await answerCallbackQuery(queryId, `✅ ${LABELS.schedule_direction[next]}`);
     const out = await rerenderGrid(chatId, { ...cfg, schedule_direction: next });
     await sendPhoto(chatId, out.png, `${out.caption} — ${LABELS.schedule_direction[next]}`);
+  });
+
+  // Hiding a class: the platform booked the slot twice and the student just
+  // said which one is theirs. The key is "date|startTime", which survives the
+  // platform renumbering its ids, and the hide applies to every schedule
+  // view — text, cards, grid image, backup — because they all read the same
+  // list. Unhiding is /unhide, which clears the lot; a single phantom class
+  // is the normal case and there is rarely more than one to restore.
+  onCallback("hide_session", async ({ chatId, queryId, match }) => {
+    const key = decodeURIComponent(String(match || ""));
+    if (!key) {
+      await answerCallbackQuery(queryId, "⚠️ ما عرفت أي حصة تقصد");
+      return;
+    }
+    const cfg = await getSettings(chatId);
+    const hidden = Array.isArray(cfg.schedule_hidden) ? [...cfg.schedule_hidden] : [];
+    if (!hidden.includes(key)) hidden.push(key);
+    await setSetting(chatId, "schedule_hidden", hidden);
+    await answerCallbackQuery(queryId, "✅ تم الإخفاء");
+    await sendMessage(
+      chatId,
+      `👁‍🗨 <b>أخفيت الحصة</b>\nصارت مخفية من كل الجدول (نص، صور، نسخة احتياطية).\n\nلو غيرت رأيك: <code>/unhide</code> يرجّع كل اللي خفيته.`,
+    );
   });
 
   // /health is the web endpoint the self-ping hits. Students reach for it as
@@ -464,8 +493,12 @@ function registerCommands() {
     let renderNote = "";
     try {
       const tokens = await getTokens();
-      const items = (await fetchScope("schedule", tokens.accessToken)).filter(
-        (s) => String(s.status || "").toLowerCase() !== "cancelled"
+      const fullCfg = await getSettings(chatId).catch(() => ({}));
+      const items = filterHidden(
+        (await fetchScope("schedule", tokens.accessToken)).filter(
+          (s) => String(s.status || "").toLowerCase() !== "cancelled"
+        ),
+        fullCfg.schedule_hidden,
       );
       const { renderScheduleGridImage } = await import("./images.js");
       const out = await renderScheduleGridImage(items);
@@ -496,7 +529,8 @@ function registerCommands() {
     const t0 = Date.now();
     try {
       const tokens = await getTokens();
-      const items = await fetchScope("schedule", tokens.accessToken);
+      const siteCfg = await getSettings(chatId).catch(() => ({}));
+      const items = filterHidden(await fetchScope("schedule", tokens.accessToken), siteCfg.schedule_hidden);
       const live = (items || []).filter(
         (s) => String(s.status || "").toLowerCase() !== "cancelled"
       );
@@ -766,6 +800,20 @@ function registerCommands() {
     await sendMessage(chatId, "🧹 مُسح سجل المراقبة. كل عنصر سيعُد جديدًا في الفحصة الجاية.");
   });
 
+  // Restore every class hidden with the conflict buttons. There is rarely
+  // more than one phantom class at a time, so this clears the whole list
+  // rather than asking which key to bring back.
+  guarded("/unhide", async ({ chatId }) => {
+    const cfg = await getSettings(chatId);
+    const n = Array.isArray(cfg.schedule_hidden) ? cfg.schedule_hidden.length : 0;
+    if (!n) {
+      await sendMessage(chatId, "👁‍émie ما في حصص مخفية الحين.");
+      return;
+    }
+    await setSetting(chatId, "schedule_hidden", []);
+    await sendMessage(chatId, `👁‍🗨 رجّعت ${n} حصة مخفية. كل الجدول ظاهر الحين.`);
+  });
+
   guarded("/due", async ({ chatId }) => {
     if (!(await requireLogin(chatId))) return;
     const tokens = await getTokens();
@@ -894,11 +942,20 @@ function registerCommands() {
   async function scheduleImpl({ chatId }, arg) {
     if (!(await requireLogin(chatId))) return;
     const tokens = await getTokens();
-    const items = await fetchScope("schedule", tokens.accessToken);
-    if (!Array.isArray(items) || !items.length) {
+    const raw = await fetchScope("schedule", tokens.accessToken);
+    if (!Array.isArray(raw) || !raw.length) {
       await sendMessage(chatId, "🗓 ما في جدول الحين.");
       return;
     }
+    // Drop the classes this student hid. The platform double-books slots
+    // often enough that the list needs this; without it the phantom class
+    // reappears every time the schedule is redrawn.
+    const cfg = await getSettings(chatId).catch(() => ({}));
+    const items = filterHidden(raw, cfg.schedule_hidden);
+    // Anything still stacked in one slot is the platform's conflict, not
+    // ours — surface it once at the top with a button per side so the
+    // student picks which is real instead of us guessing.
+    const conflicts = findConflicts(items);
     // group by day so it reads like the platform's weekly grid
     const byDay = new Map();
     for (const s of items) {
@@ -922,6 +979,19 @@ function registerCommands() {
       }
     }
     await sendMessage(chatId, lines.join("\n"));
+    // Then the conflict notice, with one hide button per clashing class.
+    // Asking up front rather than silently dropping keeps the bot from
+    // hiding a real class on a wrong guess.
+    for (const c of conflicts) {
+      await sendButtons(
+        chatId,
+        `⚠️ <b>تعارض في ${fmtDay(c.date)} الساعة ${esc(String(c.start || "").slice(0, 5))}</b>\nالمنصة حاطة حصتين بنفس الوقت. أي ودة هي الصح؟\n(الزر يخفي الثانية من كل الجدول)`,
+        c.items.map((s) => [{
+          label: `👁‍🗨 أخفي: ${String(s.title || s.subjectName || "حصة").slice(0, 22)}`,
+          action: `hide_session:${sessionKey(s)}`,
+        }]),
+      );
+    }
   }
 
   guarded("/attendance", async ({ chatId }) => {
@@ -1130,8 +1200,11 @@ function registerCommands() {
     for (const [key, label, scope] of plan) {
       try {
         const items = await fetchScope(scope, tokens.accessToken);
-        const live = (items || []).filter(
-          (s) => String(s.status || "").toLowerCase() !== "cancelled"
+        // Schedule rows drop cancelled classes and the ones the student hid —
+        // a phantom class resolved once should not reappear in the archive.
+        const live = filterHidden(
+          (items || []).filter((s) => String(s.status || "").toLowerCase() !== "cancelled"),
+          key === "schedule" ? cfg.schedule_hidden : [],
         );
         const n = (key === "schedule" ? live : items || []).length;
         const word = n === 1 ? "عنصر واحد" : n === 2 ? "عنصرين" : `${n} عنصر`;
@@ -1428,7 +1501,8 @@ function registerCommands() {
   guarded("/today", async ({ chatId }) => {
     if (!(await requireLogin(chatId))) return;
     const tokens = await getTokens();
-    const items = await fetchScope("schedule", tokens.accessToken);
+    const todayCfg = await getSettings(chatId).catch(() => ({}));
+    const items = filterHidden(await fetchScope("schedule", tokens.accessToken), todayCfg.schedule_hidden);
     const today = new Date().toISOString().slice(0, 10);
     const mine = items.filter((s) => String(s.date || "").slice(0, 10) === today);
     if (!mine.length) {
@@ -1500,7 +1574,11 @@ function registerCommands() {
       // No grid on the page: fall back to the API grid, which is the same
       // layout in the site's colours.
       await sendMessage(chatId, "📊 أجيب الجدول من بياناتك…").catch(() => {});
-      const items = (await fetchScope("schedule", tokens.accessToken)).filter((s) => s.status !== "cancelled");
+      const fbCfg = await getSettings(chatId).catch(() => ({}));
+      const items = filterHidden(
+        (await fetchScope("schedule", tokens.accessToken)).filter((s) => s.status !== "cancelled"),
+        fbCfg.schedule_hidden,
+      );
       if (!Array.isArray(items) || !items.length) {
         await sendMessage(chatId, "ما في بيانات للجدول الحين.");
         return;
@@ -1638,7 +1716,8 @@ function registerCommands() {
       } = await import("./images.js");
       if (scope === "grid") {
         await sendMessage(chatId, STEP.grid).catch(() => {});
-        const items = await fetchScope("schedule", tokens.accessToken);
+        const gridCfg0 = await getSettings(chatId).catch(() => ({}));
+        const items = filterHidden(await fetchScope("schedule", tokens.accessToken), gridCfg0.schedule_hidden);
         if (!Array.isArray(items) || !items.length) {
           await sendMessage(chatId, "ما في بيانات للجدول الحين.");
           return;
@@ -1799,6 +1878,7 @@ const HELP_TEXT = `<b>🤖 أوامر بوت طويق</b>
 /interval_15 — تغيير دقيقة الفحص (٥–١٢٠)
 /seen — آخر ما رُصد
 /reset — مسح السجل
+/unhide — إرجاع الحصص المخفية
 
 <b>☁️ MEGA (نسخ احتياطي سحابي):</b>
 /guide — 📚 <b>كيف يشتغل MEGA</b>

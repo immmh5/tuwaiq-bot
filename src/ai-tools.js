@@ -300,6 +300,23 @@ async function imgOpts() {
   }
 }
 
+
+// The schedule as this student sees it: the platform's list minus the classes
+// they hid. The AI tools go through here so a phantom class the student
+// resolved by hand never shows up in an answer or an image again.
+async function hiddenSchedule(accessToken) {
+  const items = (await fetchScope("schedule", accessToken)) || [];
+  try {
+    const { getSettings, filterHidden } = await import("./settings.js");
+    const chatId = process.env.TELEGRAM_CHAT_ID || null;
+    if (!chatId) return items;
+    const cfg = await getSettings(chatId);
+    return filterHidden(items, cfg.schedule_hidden);
+  } catch {
+    return items;
+  }
+}
+
 // Execute one tool call against the live platform.
 //
 // Action tools receive the chat id so they can change that chat's settings.
@@ -349,7 +366,7 @@ export async function runTool(name, args, accessToken, ctx = {}) {
     case "list_courses":
       return (await fetchScope("courses", accessToken)) || [];
     case "get_schedule": {
-      const items = (await fetchScope("schedule", accessToken)) || [];
+      const items = await hiddenSchedule(accessToken);
       const today = isoDay(new Date());
       const tomorrow = isoDay(new Date(Date.now() + 86400000));
       let rows = items;
@@ -374,13 +391,13 @@ export async function runTool(name, args, accessToken, ctx = {}) {
       return { unreadCount: unread.length, items: unread.slice(0, 10) };
     }
     case "send_schedule_image": {
-      const sessions = (await fetchScope("schedule", accessToken)) || [];
+      const sessions = await hiddenSchedule(accessToken);
       if (!sessions.length) return { error: "no schedule" };
       const { png, caption } = await renderScheduleImage(sessions, await imgOpts());
       return { __photo: png, __caption: caption, count: sessions.length };
     }
     case "send_schedule_grid": {
-      const sessions = (await fetchScope("schedule", accessToken)) || [];
+      const sessions = await hiddenSchedule(accessToken);
       if (!sessions.length) return { error: "no schedule" };
       const { png, caption } = await renderScheduleGridImage(sessions);
       return { __photo: png, __caption: caption, count: sessions.length };
