@@ -860,6 +860,16 @@ function registerCommands() {
     );
   });
 
+  // Clear the lot at once. The per-row buttons handle one wrong reminder; this
+  // is for a fresh start or a batch that came out badly parsed.
+  guarded("/remind_clear", async ({ chatId }) => {
+    if (!(await requireLogin(chatId))) return;
+    const { clearReminders, listReminders } = await import("./reminders.js");
+    const n = (await listReminders(chatId)).length;
+    await clearReminders(chatId);
+    await sendMessage(chatId, n ? `🧹 مسحت ${n} تذكير.` : "⏰ ما كان فيه تذكيرات أصلاً.");
+  });
+
   guarded("/reset", async ({ chatId }) => {
     await resetSeen();
     await sendMessage(chatId, "🧹 مُسح سجل المراقبة. كل عنصر سيعُد جديدًا في الفحصة الجاية.");
@@ -1923,6 +1933,7 @@ const HELP_TEXT = `<b>🤖 أوامر بوت طويق</b>
 <b>⏰ تذكيراتي:</b>
 /remind — اضبط تذكير: <code>/remind بكرة الساعة 8 باختبار الفيزياء</code>
 /reminders — تذكيراتك (تحتها زر حذف)
+/remind_clear — مسح كل التذكيرات
 <i>تروح لك في وقتها زي المنبّه</i>
 
 <b>⏰ تنبيهات الموعد النهائي:</b>
