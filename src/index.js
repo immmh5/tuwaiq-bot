@@ -1657,9 +1657,12 @@ function registerCommands() {
     }
   }
 
+  // The deadline-alert commands. Note the bare /remind belongs to the
+  // student-set reminders further up; the deadline toggle is /due_remind so
+  // the two never compete for the same prefix.
   guarded("/remind_on", async (ctx) => remindImpl(ctx, "on"));
   guarded("/remind_off", async (ctx) => remindImpl(ctx, "off"));
-  guarded("/remind", async (ctx) => remindImpl(ctx, String(ctx.args[0] || "").toLowerCase()));
+  guarded("/due_remind", async (ctx) => remindImpl(ctx, String(ctx.args[0] || "").toLowerCase()));
 
   async function remindImpl({ chatId }, arg) {
     const cfg = await getKv("reminders_config", { enabled: true });
@@ -1922,9 +1925,10 @@ const HELP_TEXT = `<b>🤖 أوامر بوت طويق</b>
 /reminders — تذكيراتك (تحتها زر حذف)
 <i>تروح لك في وقتها زي المنبّه</i>
 
-<b>⏰ التنبيهات:</b>
-/remind_on — تنبيه "باقيلك بس يوم"
-/remind_off — إيقاف تنبيه اليوم
+<b>⏰ تنبيهات الموعد النهائي:</b>
+/due_remind — حالة تنبيه "باقيلك بس يوم"
+/remind_on — تشغيل
+/remind_off — إيقاف
 /newalerts_on — تنبيهات الشي الجديد
 /newalerts_off — إيقاف تنبيهات الجديد
 /history_10 — استرجع آخر ١٠ محادثات
