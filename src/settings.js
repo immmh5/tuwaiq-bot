@@ -68,6 +68,14 @@ const DEFAULTS = {
   // which one is real. Each key is "date|startTime" so hiding survives the
   // platform renumbering its session ids. Every schedule view filters these.
   schedule_hidden: [],
+  // --- Original files -------------------------------------------------------
+  // Whether /backup also downloads the platform's documents and slides and
+  // archives them, not just the JSON describing them. The links expire, so
+  // without this the backup describes a file it can no longer open.
+  backup_files: true,
+  // How many files to pull in one run. Capped to protect the free tier's
+  // memory: a full term of lecture videos would not fit in 512MB.
+  backup_file_limit: 12,
   // --- Proactive notifications ---------------------------------------------
   // These are the clock-driven messages: the morning briefing, the exam
   // countdown, and the grade-change report. All default on and all flip off

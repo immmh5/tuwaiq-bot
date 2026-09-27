@@ -149,6 +149,64 @@ function parseCurlOutput(raw, stderr) {
   };
 }
 
+/**
+ * Download a URL into a Buffer — for binary files (PDFs, slides, images).
+ *
+ * The text fetch above stringifies the body, which destroys any byte that is
+ * not valid UTF-8; a PDF read through it comes back truncated and unreadable.
+ * This keeps the raw bytes and returns them alongside the status, so a file
+ * can be archived to MEGA exactly as the platform served it.
+ */
+export function fetchBuffer(url, opts = {}) {
+  return new Promise((resolve, reject) => {
+    const args = [
+      "-sS",
+      "--show-error",
+      "--compressed",
+      "-o", "-", // body to stdout, raw
+      "-w", "\n__STATUS__:%{http_code}",
+      "-X", opts.method || "GET",
+      "--max-time", String(opts.timeout || 120),
+      ...(opts.redirect === "manual" ? [] : ["-L"]),
+    ];
+    if (opts.cookie) args.push("-H", `Cookie: ${opts.cookie}`);
+    const headers = { ...DEFAULT_HEADERS, ...(opts.headers || {}) };
+    for (const [k, v] of Object.entries(headers)) args.push("-H", `${k}: ${v}`);
+
+    args.push(url);
+
+    const child = spawn("curl", args, { env: process.env });
+    const chunks = [];
+    let stderr = "";
+
+    child.stdout.on("data", (c) => chunks.push(c));
+    child.stderr.on("data", (c) => (stderr += c.toString()));
+
+    child.on("error", (err) => {
+      if (err.code === "ENOENT") reject(new Error("curl binary not found"));
+      else reject(err);
+    });
+
+    child.on("close", (code) => {
+      if (code !== 0 && !chunks.length) {
+        return reject(new Error(`curl exited ${code}: ${stderr.trim()}`));
+      }
+      const raw = Buffer.concat(chunks);
+      // The status marker curl appended is text; find it from the tail so the
+      // bytes before it stay untouched.
+      const tail = raw.slice(Math.max(0, raw.length - 64)).toString("latin1");
+      const m = tail.match(/__STATUS__:(\d+)\s*$/);
+      const status = m ? Number(m[1]) : 0;
+      const cut = m ? raw.length - (tail.length - tail.indexOf("__STATUS__")) : raw.length;
+      resolve({
+        status,
+        ok: status >= 200 && status < 300,
+        buffer: raw.slice(0, cut),
+      });
+    });
+  });
+}
+
 export async function fetchJson(url, opts = {}) {
   const res = await fetch(url, opts);
   const text = await res.text();

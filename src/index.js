@@ -1358,10 +1358,14 @@ function registerCommands() {
     // structured JSON, one file per scope under a dated folder. Without MEGA
     // configured in the environment this whole step is skipped and the
     // backup stays in Telegram.
-    const { getMegaConfig, uploadSnapshot, uploadIndex } = await megaModule();
+    const { getMegaConfig, uploadSnapshot, uploadIndex, uploadFile } = await megaModule();
     const megaCfg = cfg.mega_enabled === false ? null : getMegaConfig();
     const dateLabel = new Date().toISOString().slice(0, 10);
     const snapshot = [];
+    // The names of files actually archived to MEGA, reported back to the
+    // student so they know the backup holds the originals.
+    const uploadedFiles = [];
+    const fileErrors = [];
 
     for (const [key, label, scope] of plan) {
       try {
@@ -1394,6 +1398,37 @@ function registerCommands() {
             snapshot.push({ scope, file: name, count: n });
           } catch (err) {
             console.error(`mega upload failed for ${scope}:`, err.message);
+          }
+        }
+
+        // Archive the actual files, not just their descriptions. Only the
+        // materials scope has downloadable documents; every other scope is
+        // data, and its JSON above already preserves it. Downloading is the
+        // slow part, so it is gated on a setting of its own and bounded —
+        // a term's worth of videos would run the free tier out of memory.
+        if (megaCfg && key === "materials" && cfg.backup_files !== false) {
+          try {
+            const files = await downloadMaterialFiles(items || [], {
+              maxFiles: Number(cfg.backup_file_limit) || 12,
+              maxBytes: 60 * 1024 * 1024,
+            });
+            for (const f of files) {
+              try {
+                await uploadFile({
+                  cfg: megaCfg,
+                  dateLabel,
+                  name: f.name,
+                  data: f.data,
+                  contentType: f.contentType,
+                });
+                uploadedFiles.push(f.name);
+              } catch (err) {
+                console.error(`file upload failed for ${f.name}:`, err.message);
+                fileErrors.push(`${f.name}: ${err.message}`);
+              }
+            }
+          } catch (err) {
+            console.error("material download failed:", err.message);
           }
         }
 
@@ -1460,6 +1495,16 @@ function registerCommands() {
         megaCfg && snapshot.length
           ? `☁️ MEGA: ${snapshot.length} ملف في مجلد <code>${dateLabel}</code>`
           : "☁️ MEGA: غير مربوط — قلّل فقط لـ تلجرام",
+        uploadedFiles.length
+          ? `📎 <b>الملفات الأصلية:</b> ${uploadedFiles.length} ملف انحفظت في <code>ملفات/</code>`
+          : null,
+        uploadedFiles.length
+          ? uploadedFiles.slice(0, 8).map((f) => `   · ${esc(f)}`).join("\n")
+          : null,
+        uploadedFiles.length > 8 ? `   · <i>و ${uploadedFiles.length - 8} ملف ثاني</i>` : null,
+        fileErrors.length
+          ? `⚠️ ما قدرت أنزل ${fileErrors.length} ملف (الرابط انتهى أو كبير)`
+          : null,
         megaError
           ? `⚠️ <b>MEGA فشل:</b> <code>${esc(megaError).slice(0, 150)}</code>\n<i>النسخة وصلت في تلجرام — أصلح MEGA من المتغيرات.</i>`
           : null,
@@ -1523,6 +1568,61 @@ function registerCommands() {
 
   async function megaModule() {
     return import("./mega.js");
+  }
+
+  // Fetch the platform's own files into memory so they can be archived as-is.
+  // The links are time-limited S3 URLs, so a backup that only stored the link
+  // would be empty a year later — the file itself is what the student wants.
+  //
+  // Bounded in both count and size: the free tier has 512MB and a single
+  // lecture video can swallow that. Documents and slides come first; videos
+  // are skipped unless the limit is raised, because they are the thing that
+  // breaks the memory budget.
+  async function downloadMaterialFiles(materials, { maxFiles = 12, maxBytes = 60 * 1024 * 1024 } = {}) {
+    const { fetchBuffer } = await import("./http.js");
+    const tokens = await getTokens();
+    const picked = (materials || [])
+      .filter((m) => m && (m.fileUrl || m.externalUrl))
+      .filter((m) => !/VIDEO|VIDEO/i.test(String(m.contentType || "")))
+      .slice(0, maxFiles);
+    const out = [];
+    let used = 0;
+    for (const m of picked) {
+      const url = m.fileUrl || m.externalUrl;
+      const ext = extFor(m);
+      const base = String(m.title || "مادة").replace(/[<>:"/\\|?*\x00-\x1f]/g, "").slice(0, 60);
+      const name = `${base}${ext}`;
+      try {
+        const res = await fetchBuffer(url, {
+          headers: { Authorization: `Bearer ${tokens.accessToken}` },
+          timeout: 90,
+        });
+        if (!res.ok || !res.buffer || !res.buffer.length) continue;
+        // Skip anything oversized rather than uploading it and running out
+        // of room for the rest.
+        if (used + res.buffer.length > maxBytes) continue;
+        used += res.buffer.length;
+        out.push({ name, data: res.buffer, contentType: m.contentType, title: m.title });
+      } catch (err) {
+        console.error(`download failed for ${name}:`, err.message);
+      }
+    }
+    return out;
+  }
+
+  // The platform names files by upload timestamp; the student knows the
+  // lesson by its title. Pick the extension from the content type so the
+  // archived file opens with the right program.
+  function extFor(m) {
+    const t = String(m.contentType || "").toUpperCase();
+    if (t.includes("PDF")) return ".pdf";
+    if (t.includes("PRESENT")) return ".pptx";
+    if (t.includes("DOC")) return ".docx";
+    if (t.includes("IMAGE")) return ".png";
+    if (t.includes("VIDEO")) return ".mp4";
+    return m.fileUrl && /\.(\w{2,5})(\?|$)/.test(m.fileUrl)
+      ? "." + m.fileUrl.match(/\.(\w{2,5})(\?|$)/)[1]
+      : ".bin";
   }
 
   guarded("/mega", async (ctx) => megaImpl(ctx, (ctx.args[0] || "").toLowerCase()));

@@ -154,6 +154,26 @@ function withTimeout(promise, label) {
   ]);
 }
 
+// Upload a raw downloaded file — a PDF, a slide deck, a video — under a
+// "ملفات" subfolder of the dated backup. Keeping the originals separate from
+// the JSON scopes means the archive is not just a description of the term but
+// the term itself: a link that expires on the platform is still openable a
+// year later.
+//
+// The buffer is kept as bytes; megajs takes a Buffer or a stream, and passing
+// a stringified PDF here was the first version of this, which produced files
+// that opened as blank pages.
+export async function uploadFile({ cfg = getMegaConfig(), dateLabel, name, data, contentType }) {
+  if (!cfg) throw new Error("MEGA غير مُعد");
+  if (!Buffer.isBuffer(data)) data = Buffer.from(data);
+  const storage = await getSession(cfg);
+  const root = await ensureFolder(storage.root, ROOT_FOLDER);
+  const dayFolder = await ensureFolder(root, dateLabel);
+  const filesFolder = await ensureFolder(dayFolder, "ملفات");
+  await withTimeout(filesFolder.upload({ name }, data), `رفع ${name}`);
+  return name;
+}
+
 export async function uploadSnapshot({ cfg = getMegaConfig(), dateLabel, scopeIndex, scopeName, payload }) {
   if (!cfg) throw new Error("MEGA غير مُعد");
   // Reuses the one session rather than logging in per file — MEGA locks an
