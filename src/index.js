@@ -425,8 +425,8 @@ function registerCommands() {
   // view — text, cards, grid image, backup — because they all read the same
   // list. Unhiding is /unhide, which clears the lot; a single phantom class
   // is the normal case and there is rarely more than one to restore.
-  onCallback("hide_session", async ({ chatId, queryId, match }) => {
-    const key = decodeURIComponent(String(match || ""));
+  onCallback("hide_session", async ({ chatId, queryId, arg }) => {
+    const key = decodeURIComponent(String(arg || ""));
     if (!key) {
       await answerCallbackQuery(queryId, "⚠️ ما عرفت أي حصة تقصد");
       return;
