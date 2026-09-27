@@ -1999,6 +1999,8 @@ const HELP_TEXT = `<b>🤖 أوامر بوت طويق</b>
 /exams — الاختبارات المتاحة
 /grades — كل الدرجات
 /courses — مقرراتي (مع الحضور والدرجات)
+/curriculum — 📚 فهرس المنهج (أحدث درس لكل مادة)
+/links — 🔗 روابط كل الدروس
 /schedule — الجدول الأسبوعي
 /schedule_today — حصص اليوم
 /attendance — نسبة الحضور
