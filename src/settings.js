@@ -173,13 +173,46 @@ export function sessionKey(s) {
   return `${String(date).slice(0, 10)}|${String(start).slice(0, 5)}`;
 }
 
+// A stable id for one class in one slot. Hiding by slot alone was wrong: when
+// two classes share 07:00 on Thursday, hiding "احياء" also hid "اللغة
+// الانجليزية" and left the student with an empty first period. The hide key
+// therefore carries the subject too.
+//
+// The subject is hashed rather than inlined because Telegram caps
+// callback_data at 64 bytes and Arabic subjects are wide — the raw string
+// would not fit. Six base36 chars is ~2 billion values; a student's week has
+// under a hundred classes, so a clash would mean one extra hidden class, not
+// data loss.
+export function hideKey(s) {
+  const subj = String(s.subject || s.subjectName || s.title || "").trim();
+  let h = 0;
+  for (let i = 0; i < subj.length; i++) {
+    h = (h * 31 + subj.charCodeAt(i)) >>> 0;
+  }
+  return `${sessionKey(s)}|${h.toString(36).padStart(6, "0")}`;
+}
+
 // Drop the classes this chat has hidden. Every schedule view calls this —
 // the text list, the day cards, the grid image, and the backup — so hiding
 // a phantom class removes it everywhere at once instead of from one view.
 export function filterHidden(items, hidden) {
   if (!Array.isArray(hidden) || !hidden.length) return items || [];
-  const drop = new Set(hidden);
-  return (items || []).filter((s) => !drop.has(sessionKey(s)));
+  // Entries saved before the subject was part of the key are slot keys, and
+  // a slot key hides every class in that slot — which is the bug the student
+  // hit when hiding one of two Thursday 07:00 classes hid the other. They
+  // cannot match anything now that the key carries a subject hash, so they
+  // are ignored here; the student's English lesson comes back.
+  const drop = new Set(cleanHidden(hidden));
+  return (items || []).filter((s) => !drop.has(hideKey(s)));
+}
+
+// Keep only hide keys that name one class — date, time, and subject hash.
+// Legacy entries that stop at date|time are dropped, since they would hide
+// a whole slot rather than the one class the student picked.
+export function cleanHidden(hidden) {
+  return (Array.isArray(hidden) ? hidden : []).filter((k) =>
+    /^\d{4}-\d{2}-\d{2}\|\d{2}:\d{2}\|[0-9a-z]{6}$/.test(String(k)),
+  );
 }
 
 // Find slots the platform booked twice. Returns [{key, date, start, items}]

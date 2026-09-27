@@ -25,6 +25,8 @@ import {
   SETTING_HINTS,
   PANEL,
   sessionKey,
+  hideKey,
+  cleanHidden,
   filterHidden,
   findConflicts,
 } from "./settings.js";
@@ -432,13 +434,24 @@ function registerCommands() {
       return;
     }
     const cfg = await getSettings(chatId);
-    const hidden = Array.isArray(cfg.schedule_hidden) ? [...cfg.schedule_hidden] : [];
+    // Rewrite the list so legacy slot keys that hid whole slots are dropped
+    // for good, not just ignored on read.
+    const hidden = cleanHidden(Array.isArray(cfg.schedule_hidden) ? cfg.schedule_hidden : []);
     if (!hidden.includes(key)) hidden.push(key);
     await setSetting(chatId, "schedule_hidden", hidden);
+    // Name the class back to the student so the button's effect is obvious:
+    // a hash on its own does not tell them which lesson just vanished.
+    let name = "الحصة";
+    try {
+      const tokens = await getTokens();
+      const all = await fetchScope("schedule", tokens.accessToken);
+      const hit = all.find((s) => hideKey(s) === key);
+      if (hit) name = String(hit.title || hit.subjectName || "الحصة");
+    } catch {}
     await answerCallbackQuery(queryId, "✅ تم الإخفاء");
     await sendMessage(
       chatId,
-      `👁‍🗨 <b>أخفيت الحصة</b>\nصارت مخفية من كل الجدول (نص، صور، نسخة احتياطية).\n\nلو غيرت رأيك: <code>/unhide</code> يرجّع كل اللي خفيته.`,
+      `👁‍🗨 <b>أخفيت: ${esc(name)}</b>\nصارت مخفية من كل الجدول (نص، صور، نسخة احتياطية).\n\nلو غيرت رأيك: <code>/unhide</code> يرجّع كل اللي خفيته.`,
     );
   });
 
@@ -1154,7 +1167,10 @@ function registerCommands() {
         `⚠️ <b>تعارض في ${fmtDay(c.date)} الساعة ${esc(String(c.start || "").slice(0, 5))}</b>\nالمنصة حاطة حصتين بنفس الوقت. أي ودة هي الصح؟\n(الزر يخفي الثانية من كل الجدول)`,
         c.items.map((s) => [{
           label: `👁‍🗨 أخفي: ${String(s.title || s.subjectName || "حصة").slice(0, 22)}`,
-          action: `hide_session:${sessionKey(s)}`,
+          // hideKey, not sessionKey: two classes in one slot must be hidden
+          // separately, or picking "أخفي أحياء" also drops the English
+          // lesson sharing its 07:00 slot.
+          action: `hide_session:${hideKey(s)}`,
         }]),
       );
     }
