@@ -17,6 +17,20 @@ const KEY = (chatId) => `reminders:${chatId}`;
 // the student gets one message, not a burst.
 const ARABIA_TZ_OFFSET_MIN = 180; // UTC+3, Saudi time, no DST to track.
 
+// The next occurrence of a day of month: "ال4" → the coming 4th. If the 4th
+// already passed this month, it rolls to next month, so a reminder set on the
+// 27th for "ال4" lands on the 4th, not yesterday. Uses UTC getters because the
+// date is built on an already-offset instant.
+function nextDayOfMonth(localNow, day) {
+  const y = localNow.getUTCFullYear();
+  const m = localNow.getUTCMonth();
+  let cand = new Date(Date.UTC(y, m, day, 12, 0, 0));
+  if (cand <= new Date(Date.UTC(y, m, localNow.getUTCDate(), 23, 59, 59))) {
+    cand = new Date(Date.UTC(y, m + 1, day, 12, 0, 0));
+  }
+  return cand.toISOString().slice(0, 10);
+}
+
 // --- Parsing ---------------------------------------------------------------
 
 // "بكرة", "اليوم", "الاثنين".. → an absolute date. Returns null when the word
@@ -85,6 +99,18 @@ export function parseReminder(text, now = new Date()) {
   for (let i = 0; i < words.length; i++) {
     const w = words[i];
     const clean = w.replace(/[ً-ْ.,،]/g, "");
+    // "الحين" / "الآن" means fire as soon as possible — today, a few minutes
+    // from now. Without this the reminder sailed to tomorrow 1pm, which is
+    // the opposite of what the student asked for.
+    if (/^(الحين|الان|آلان|هالحين|الحينه|الوقت|هلحظة)$/.test(clean)) {
+      dateISO = todayISO;
+      const in15 = new Date(now.getTime() + (ARABIA_TZ_OFFSET_MIN + 15) * 60000);
+      // Read the Saudi wall clock with the UTC getters: the date was built by
+      // adding the offset, so machine-local getters would double-shift on a
+      // host that already runs UTC+3.
+      time = `${String(in15.getUTCHours()).padStart(2, "0")}:${String(Math.round(in15.getUTCMinutes() / 5) * 5 % 60).padStart(2, "0")}`;
+      continue;
+    }
     // Relative days.
     if (!dateISO) {
       if (/^(اليوم|النهار|هاليوم)$/.test(clean)) { dateISO = todayISO; continue; }
@@ -93,24 +119,46 @@ export function parseReminder(text, now = new Date()) {
         dateISO = iso(new Date(localNow.getTime() + 2 * 86400000));
         i++; continue;
       }
+      // A day of month: "ال4", "يوم 4", "اليوم ال4". The platform says
+      // dates by number, and the student talks that way too.
+      const dayNum = /^(ال)?(\d{1,2})$/.test(clean) ? Number(clean.replace(/^ال/, "")) : null;
+      const prevWord = (words[i - 1] || "").replace(/[ً-ْ.,،]/g, "");
+      if (dayNum && dayNum >= 1 && dayNum <= 31 && (/^ال/.test(clean) || /^(يوم|اليوم)$/.test(prevWord))) {
+        dateISO = nextDayOfMonth(localNow, dayNum);
+        continue;
+      }
       const wd = dayWordToISO(clean, now);
       if (wd) { dateISO = wd; continue; }
     }
     // "الساعة" just marks a clock is coming; drop the word and let the next
     // token be parsed as the time.
     if (/^(الساعة|ساعة|الساعه)$/.test(clean) && !time) continue;
+    // A time is already found, so a bare number or a clock marker now is the
+    // far end of a range — "3 او 4 ظهر" — not a second reminder. Drop it
+    // rather than letting "او 4 ظهر" become the body.
+    if (time && /^(\d{1,2})([:.]\d{1,2})?$/.test(clean)) continue;
+    if (time && /^(م|ص|مساء|صباح|الصباح|ظهر|الظهر|ليل|بالليل|عصر|العصر|مغرب|او|أو)$/.test(clean)) continue;
     // Clock: "8", "8:30", "8.30" optionally followed by ص/م.
     if (!time && /^(\d{1,2})([:.]\d{1,2})?$/.test(clean)) {
       const next = (words[i + 1] || "").replace(/[ً-ْ.,،]/g, "");
       // "بالليل" reads as PM, "بالصباح" as AM — students say these more than
       // the bare ص/م markers.
-      const isPM = /^(م|مساء|مغرب|العصر|بالليل|ليل)$/.test(next);
-      const isAM = /^(ص|صباح|الصبح|الصباح|بالصباح|بالنهار)$/.test(next);
+      const isPM = /^(م|مساء|مغرب|العصر|بالليل|ليل|ظهر|الظهر|عصر)$/.test(next);
+      const isAM = /^(ص|صباح|الصبح|الصباح|بالصباح|بالنهار|فجر|الفجر)$/.test(next);
       // The marker can also precede the number — "بالليل 3" — so look
       // backwards too.
       const prev = (words[i - 1] || "").replace(/[ً-ْ.,،]/g, "");
-      const isPM2 = /^(مساء|مغرب|العصر|بالليل|ليل)$/.test(prev);
-      const isAM2 = /^(صباح|الصبح|الصباح|بالصباح|بالنهار)$/.test(prev);
+      const isPM2 = /^(مساء|مغرب|العصر|بالليل|ليل|ظهر|الظهر|عصر|بعد الظهر)$/.test(prev);
+      const isAM2 = /^(صباح|الصبح|الصباح|بالصباح|بالنهار|فجر|الفجر)$/.test(prev);
+      // "3 او 4 ظهر" — the marker can sit a couple of words after the number,
+      // so look ahead a short window for it before deciding the hour means
+      // 3am. Stops at whichever marker shows up first.
+      let lookPM = isPM, lookAM = isAM;
+      for (let j = i + 2; j <= i + 3 && j < words.length; j++) {
+        const wj = (words[j] || "").replace(/[ً-ْ.,،]/g, "");
+        if (/^(م|مساء|مغرب|العصر|بالليل|ليل|ظهر|الظهر|عصر)$/.test(wj)) { lookPM = true; break; }
+        if (/^(ص|صباح|الصبح|الصباح|بالصباح|بالنهار|فجر|الفجر)$/.test(wj)) { lookAM = true; break; }
+      }
       let [h, m] = clean.split(/[.:]/).map(Number);
       // A bare small number with no marker is genuinely ambiguous, and the
       // sentence is the tiebreaker: "أذاكر", "أراجع", "أسلم" mean the
@@ -121,11 +169,14 @@ export function parseReminder(text, now = new Date()) {
         sentence,
       );
       const morningSense = /(الصبح|الصباح|أصحى|أصحي|فجر|قبل المدرسة|بدري)/.test(sentence);
-      if (!isPM && !isAM && h <= 8 && eveningSense && !morningSense) {
+      if (!lookPM && !lookAM && h <= 6 && !morningSense) {
+        h += 12; // "الساعة 3" → 15:00 — nobody sets a 3am reminder
+      }
+      if (!lookPM && !lookAM && h <= 8 && eveningSense && !morningSense) {
         h += 12; // "5 أذاكر" → 17:00
       }
-      if ((isPM || isPM2) && h < 12) h += 12;
-      if ((isAM || isAM2) && h === 12) h = 0;
+      if ((lookPM || isPM2) && h < 12) h += 12;
+      if ((lookAM || isAM2) && h === 12) h = 0;
       time = `${String(h % 24).padStart(2, "0")}:${String(m || 0).padStart(2, "0")}`;
       if (isPM || isAM) i++;
       continue;
@@ -142,10 +193,24 @@ export function parseReminder(text, now = new Date()) {
     time = inferPriority(original).level === "high" ? "13:00" : "08:00";
   }
   const priority = inferPriority(original);
-  const body = kept
-    .join(" ")
-    .replace(/^(إن|أن|إني|اني|ن)\s+/i, "")
-    .trim();
+  // Words that carry the instruction but not the thing being remembered:
+  // "خل التنبيه يوم" is not a reminder, "باختبار التاريخ" is. Dropped
+  // anywhere rather than just at the start, since the student puts the
+  // command word in the middle as often as the front.
+  const FILLER = new Set([
+    "خل", "خلي", "ضبط", "ضبطني", "التنبيه", "تنبيه", "التذكير", "تذكير",
+    "يوم", "الساعة", "ساعة", "وايضا", "وا", "بس", "ذكرني", "ذكرين", "مفروض",
+  ]);
+  // A sentence that is all command and no content — "خل التنبيه يوم ال4
+  // الساعة 4 ظهر" — still names a real appointment, so fall back to the
+  // original rather than dropping the reminder. Nothing left to say only
+  // when the student sent an empty string.
+  const body =
+    kept
+      .filter((w) => !FILLER.has(w.replace(/[ً-ْ.,،]/g, "")))
+      .join(" ")
+      .replace(/^(إن|أن|إني|اني|ن)\s+/i, "")
+      .trim() || original.trim().slice(0, 60);
   // The reminder needs something left to actually say.
   if (!body || body.length < 2) return null;
   return { date: dateISO, time, body, raw: original, priority: priority.level, reason: priority.reason };

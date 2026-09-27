@@ -296,6 +296,30 @@ export const TOOL_SPECS = [
   {
     type: "function",
     function: {
+      // Changing an existing reminder: "خل تنبيه التسميع يوم ال4 الساعة 3".
+      // Without this the model could only add a second one and leave the
+      // wrong one firing too.
+      name: "update_reminder",
+      description: "عدّل تذكير موجود: غير وقته أو تاريخه. استخدمها لما الطالب يبغى يأجل أو يقدم تنبيه سبق وسواه. لو في أكثر من واحد مطابق، عدّل الأول.",
+      parameters: {
+        type: "object",
+        properties: {
+          match: {
+            type: "string",
+            description: "كلمة من نص التذكير القديم، مثل: تسميع، اختبار، فيز",
+          },
+          when: {
+            type: "string",
+            description: "الموعد الجديد بلغة الطالب، مثل: يوم ال4 الساعة 3 ظهر، بكرة الساعة 5",
+          },
+        },
+        required: ["match", "when"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "curriculum_course",
       description: "كل دروس مادة معينة بالترتيب من الأحدث للأقدم. استخدمها لما يسأل عن مادة بعينها: وش أخذنا، وين وصلنا، أبغى روابط الدروس.",
       parameters: {
@@ -616,8 +640,43 @@ export async function runTool(name, args, accessToken, ctx = {}) {
       const rows = await listReminders(chatId);
       return { ok: true, count: rows.length, reminders: rows.map((r) => ({ body: r.body, at: fmtReminder(r) })) };
     }
-    case "curriculum_today": {
-      const { getIndex, digestForModel } = await import("./curriculum.js");
+    case "update_reminder": {
+      const { listReminders, removeReminder, addReminder, parseReminder, fmtReminder } = await import("./reminders.js");
+      const rows = await listReminders(chatId);
+      const want = normalize(String(a.match || ""));
+      if (!want) return { ok: false, error: "قول لي أي تذكير أعدّل: وش كلمته؟" };
+      // Match on the cleaned text so "تسميع" finds "تسميع العناصر المهمة".
+      const hit = rows.find((r) => normalize(r.body).includes(want));
+      if (!hit) {
+        return {
+          ok: false,
+          notFound: true,
+          have: rows.map((r) => r.body),
+          error: rows.length
+            ? `ما لقيت تذكير فيه "${a.match}". اللي عندك: ${rows.map((r) => r.body).join("، ")}`
+            : "ما عندك تذكيرات أصلًا. استخدم set_reminder تسوي واحد جديد.",
+        };
+      }
+      // Parse the new moment, then rebuild with the old wording so the
+      // reminder keeps saying what it is about.
+      const fresh = parseReminder(String(a.when || ""), new Date());
+      if (!fresh) return { ok: false, error: `ما فهمت الوقت الجديد: "${a.when}"` };
+      await removeReminder(chatId, hit.id);
+      const rebuilt = await addReminder(chatId, {
+        body: hit.body,
+        date: fresh.date,
+        time: fresh.time,
+        priority: hit.priority,
+      });
+      return {
+        ok: true,
+        body: hit.body,
+        from: fmtReminder(hit),
+        to: fmtReminder(rebuilt),
+        preview: `✅ نقلت "${hit.body}" من ${fmtReminder(hit)} إلى ${fmtReminder(rebuilt)}`,
+      };
+    }
+    case "curriculum_today": {      const { getIndex, digestForModel } = await import("./curriculum.js");
       const index = await getIndex(chatId);
       if (!index) {
         // Nothing indexed yet: build it on demand from a live scan so the

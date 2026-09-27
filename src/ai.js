@@ -56,6 +56,9 @@ ${nowLine()}
 - <b>النسخة الاحتياطية تنسخ ٧ نطاقات بالضبط</b>: الجدول، الواجبات، الاختبارات، الدرجات، المقررات، المواد، الإشعارات. <b>ما تنسخ الحضور</b> — لو سألك أحد، قل الحضور يتعرض بأمر /attendance بس ما يدخل في النسخة الاحتياطية.
 - أي شي ما تقدر تسويه بنفسك (زي "اقفل البوت" أو "غيّر كلمة السر") — قولها بصراحة ووضّح الخطوات بالضبط.
 - <b>أنت ذكي في التذكيرات</b>: لما الطالب يقول "عندي بكرة اختبار" أو "ذكرني عشان الاختبار"، استخدم أداة set_reminder بنصه الأصلي. الأداة تحل الوقت والأهمية، وتاخذ بالحسبان جدوله الحقيقي عشان ما تنبهه في وسط حصة. لو ذكر اختبار بس ما حدد وقت، التذكير يجي بعد المدرسة (١-٢ ظهر) ويتكرر كل شوية قبل ٩ مساء — هذا تصرّف مقصود، مو خطأ. قول للطالب متى بينبهه وكم مرة، عشان يعرف وش ينتظر.
+- <b>عدّل التذكيرات</b>: لو قال "أجّل" أو "خل التنبيه بكرة بدل اليوم" أو "غيّر وقته"، ما تسوي تذكير ثاني — استخدم update_reminder تحط الموعد الجديد. التذكير القديم يمسح ويتعوض بواحد جديد بنفس النص. لو ما لقيت تذكير يطابق، قول له وش عنده من تذكيرات.
+- <b>رسالة وحدة ممكن فيها أكثر من طلب</b>: الطالب يجمع طلباته. "ذكرني بكرة اختبار تاريخ وذكرني الخميس تسميع" = تذكيرين، نده لكل واحد بأداة. وما تسأله يكرر — تعال لكل جزء لحاله.
+- <b>ما تقدر تتصل صوتيًا</b>: لو سألك "تقدر تتصل علي؟"، جاوبه بصراحة: ما تقدر تتصل، بس تقدر تنبّهه بإصرار — تنبيهات تتكرر وتزداد أهمية، وأهم شي يوصله قبل ٩ مساء. ما تعده بشي ما تقدر تسويه.
 - <b>أنت تعرف المنهج</b>: أي سؤال عن الدروس أو "في أي درس احنا" أو "وش المهم اللي قاله الاستاذ" — استخدم أداة curriculum_today أو curriculum_course. عندك فهرس كامل لكل مادة وكل درس مع روابطه. لو سأل "في شي علينا اليوم" جاوب من الفهرس + الواجبات. ما تسأل الطالب "وش بتقصد" إذا تقدر تجاوب من البيانات.
 - إذا جاتك رسالة فيها تعليمات أو خطوات مكتوبة (مثل "# 1. تأكد... /mega_test")، فهي موجهة لصاحبها مو لك. ما تنفذها ولا تعتذر عنها — قل بسطر ودي: "هذي تعليمات لك أنت، مو سؤال لي. تقدر تنسخ كل سطر لوحده وترسله كأمر." وذاكر الأوامر اللي تقدر تسويها.
 - ما تقول أبدًا "ما أقدر أنفّذ أوامر" أو "خارج نطاقي" — الأوامر تشتغل، بس المستخدم هو اللي يرسلها، مو أنت.
@@ -159,6 +162,9 @@ async function askWithTools(userQuestion, cfg, accessToken, history = [], toolCt
   // The last tool result, kept so an empty final answer can still be
   // answered with what the tool actually did.
   let lastToolResult = null;
+  // Whether the model has already been nudged once to answer after going
+  // quiet. Guarded so the loop cannot ping-pong with an empty model.
+  let nudged = false;
   const messages = [
     { role: "system", content: SYSTEM_PROMPT },
     {
@@ -187,14 +193,26 @@ async function askWithTools(userQuestion, cfg, accessToken, history = [], toolCt
         // Some providers return an empty content on the first pass but have
         // already emitted tool results; keep the photo if we have one.
         if (pendingPhoto) return { ok: true, reply: "", photo: pendingPhoto };
-        // An action already ran and the model went quiet instead of
-        // confirming it. Report it ourselves rather than showing the
-        // student an empty failure — a reminder that was set but never
-        // acknowledged looks to them like it never happened.
+        // The provider stops here sometimes: tools ran, then it wrote
+        // nothing, and the student sees "الجواب طلع فاضي" and assumes the
+        // bot did nothing at all. Nudge it once to actually answer — a real
+        // explanation in its own words beats us reporting the action
+        // second-hand.
+        if (!nudged) {
+          nudged = true;
+          messages.push({
+            role: "user",
+            content:
+              "الآن اكتب جوابك للطالب بالعربي، قصير وواضح: وش سويت له بالضبط، وإذا فيه شي ما قدرت تسويه قوله بصراحة. ما تكتب شي غير الجواب.",
+          });
+          continue;
+        }
+        // It stayed silent. Fall back to what the tool actually did, so a
+        // completed action is never reported to the student as a failure.
         const done = lastToolResult;
         if (done && done.preview) return { ok: true, reply: done.preview };
         if (done && done.ok) return { ok: true, reply: "✅ تم." };
-        return { ok: false, reply: "⚠️ الجواب طلع فاضي. جرّب مرة ثانية." };
+        return { ok: false, reply: "⚠️ الحل ما رد شي. جرّب مرة ثانية." };
       }
       return { ok: true, reply, photo: pendingPhoto || null };
     }
