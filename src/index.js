@@ -442,6 +442,14 @@ function registerCommands() {
     );
   });
 
+  // Deleting one reminder from the list. The id is ours, so a bad id just
+  // means the row already went — no error worth surfacing.
+  onCallback("del_reminder", async ({ chatId, queryId, arg }) => {
+    const { removeReminder } = await import("./reminders.js");
+    const n = await removeReminder(chatId, String(arg || ""));
+    await answerCallbackQuery(queryId, n ? "🗑 تم الحذف" : "ما عندي هذا التذكير");
+  });
+
   // /health is the web endpoint the self-ping hits. Students reach for it as
   // a command too, so answer with the same state instead of "unknown
   // command" — no login gate, since it is the thing to try when login is
@@ -779,20 +787,77 @@ function registerCommands() {
     try {
       const { runScheduler } = await import("./scheduler.js");
       const res = await runScheduler({ send: (text) => sendMessage(chatId, text) });
-      if (!res.morning && !res.exams && !res.grades) {
+      const fired = res.morning || res.exams || res.grades || res.reminders;
+      if (!fired) {
         await sendMessage(
           chatId,
           "✅ كل التنبيهات إما وصلت مسبقًا أو ما في شي جديد.\n\n<i>الصباحية تأتي مرة في اليوم، والاختبارات تتذكّر مرة واحدة لكل موعد.</i>"
         );
       } else {
-        await sendMessage(
-          chatId,
-          `✅ أرسلت: ${res.morning ? "صباحية " : ""}${res.exams ? `${res.exams} تنبيه اختبار ` : ""}${res.grades ? `${res.grades} تغيّر درجة` : ""}`
-        );
+        const bits = [];
+        if (res.morning) bits.push("صباحية");
+        if (res.exams) bits.push(`${res.exams} تنبيه اختبار`);
+        if (res.grades) bits.push(`${res.grades} تغيّر درجة`);
+        if (res.reminders) bits.push(`${res.reminders} تذكير`);
+        await sendMessage(chatId, `✅ أرسلت: ${bits.join(" · ")}`);
       }
     } catch (err) {
       await sendMessage(chatId, `⚠️ ما قدرت: <code>${escapeHtml(err.message)}</code>`);
     }
+  });
+
+  // --- Reminders -----------------------------------------------------------
+  // The student's own memory, in their own words: "/remind بكرة الساعة 8
+  // باختبار الفيزياء". Everything past the command is the sentence; the
+  // parser pulls the day and the clock out of it, and the confirmation shows
+  // what was understood so a bad parse is visible before it matters.
+  guarded("/remind", async ({ chatId, text }) => {
+    if (!(await requireLogin(chatId))) return;
+    const { parseReminder, addReminder, fmtReminder } = await import("./reminders.js");
+    const sentence = String(text || "").replace(/^\/remind\s*/i, "").trim();
+    if (!sentence) {
+      await sendMessage(
+        chatId,
+        "⏰ <b>كيف تستخدم التذكير</b>\n\nاكتب بالعربي متى تتذكر ووش تبي تتذكر:\n\n"
+        + "<code>/remind بكرة الساعة 8 باختبار الفيزياء</code>\n"
+        + "<code>/remind الاثنين الساعة 5 مساء بموعيد المستشار</code>\n"
+        + "<code>/remind بكرة 7 الصبح بسلم الواجب</code>\n\n"
+        + "<i>الأيام: اليوم · بكرة · بعد بكرة · أو اسم اليوم</i>\n"
+        + "<i>الأوقات: 8 · 8:30 · 5 مساء · 7 الصبح</i>\n\n"
+        + "شوف تذكيراتك: <code>/reminders</code>",
+      );
+      return;
+    }
+    const r = parseReminder(sentence);
+    if (!r) {
+      await sendMessage(
+        chatId,
+        "⚠️ ما فهمت وش تبي تتذكر فيه.\nاكتب الشي بعد الأمر، مثل:\n<code>/remind بكرة الساعة 8 باختبار الفيزياء</code>",
+      );
+      return;
+    }
+    await addReminder(chatId, r);
+    await sendMessage(
+      chatId,
+      `⏰ <b>تم التذكير</b>\n${escapeHtml(r.body)}\n📅 ${escapeHtml(fmtReminder(r))}\n\nشوفها كلها: <code>/reminders</code>`,
+    );
+  });
+
+  // List the pending reminders with a delete button each, so a wrong one can
+  // be pulled without clearing the lot.
+  guarded("/reminders", async ({ chatId }) => {
+    if (!(await requireLogin(chatId))) return;
+    const { listReminders, fmtReminder } = await import("./reminders.js");
+    const rows = await listReminders(chatId);
+    if (!rows.length) {
+      await sendMessage(chatId, "⏰ ما عندك تذكيرات الحين.\nأضف واحد: <code>/remind بكرة الساعة 8 باختبار الفيزياء</code>");
+      return;
+    }
+    await sendButtons(
+      chatId,
+      "<b>⏰ تذكيراتك</b>\n\n" + rows.map((r) => `• ${escapeHtml(r.body)} — <i>${escapeHtml(fmtReminder(r))}</i>`).join("\n"),
+      rows.map((r) => [{ label: `🗑 ${String(r.body).slice(0, 20)}`, action: `del_reminder:${r.id}` }]),
+    );
   });
 
   guarded("/reset", async ({ chatId }) => {
@@ -1851,6 +1916,11 @@ const HELP_TEXT = `<b>🤖 أوامر بوت طويق</b>
 /proactive — جرّبها الحين
 <i>الصباحية كل يوم ٦:٣٠ ص + عدّاد الاختبارات + تغيّر الدرجات</i>
 <i>تشغّلها وتطفّيها من /settings</i>
+
+<b>⏰ تذكيراتي:</b>
+/remind — اضبط تذكير: <code>/remind بكرة الساعة 8 باختبار الفيزياء</code>
+/reminders — تذكيراتك (تحتها زر حذف)
+<i>تروح لك في وقتها زي المنبّه</i>
 
 <b>⏰ التنبيهات:</b>
 /remind_on — تنبيه "باقيلك بس يوم"

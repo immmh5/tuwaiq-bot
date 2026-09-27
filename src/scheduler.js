@@ -260,7 +260,7 @@ async function currentTokens() {
 // the others. A send failure (bot asleep, Telegram hiccup) does not record
 // state, so the message retries next tick.
 export async function runScheduler({ send, now = new Date() } = {}) {
-  if (!send) return { morning: 0, exams: 0, grades: 0 };
+  if (!send) return { morning: 0, exams: 0, grades: 0, reminders: 0 };
   const cfg = await getSettings(process.env.TELEGRAM_CHAT_ID || null).catch(() => ({}));
 
   let morning = 0;
@@ -284,5 +284,27 @@ export async function runScheduler({ send, now = new Date() } = {}) {
     } catch {}
   }
 
-  return { morning, exams, grades };
+  // Student-set reminders. Unlike the three above these have no per-feature
+  // toggle — setting one is itself the toggle, and the student's own words
+  // are the payload.
+  let reminders = 0;
+  try {
+    reminders = await maybeReminders(now, send);
+  } catch (err) {
+    console.error("reminder tick failed:", err.message);
+  }
+
+  return { morning, exams, grades, reminders };
+}
+
+async function maybeReminders(now, send) {
+  const chatId = process.env.TELEGRAM_CHAT_ID || null;
+  if (!chatId) return 0;
+  const { collectDueReminders } = await import("./reminders.js");
+  const due = await collectDueReminders(chatId, now);
+  if (!due.length) return 0;
+  for (const r of due) {
+    await send(`⏰ <b>تذكير</b>\n${esc(r.body)}`);
+  }
+  return due.length;
 }

@@ -353,14 +353,25 @@ async function notifyFresh(fresh) {
     for (const { item } of fresh) await markSeen(item);
     return;
   }
+  // A new exam or a new grade is the kind of thing the student wants pulled
+  // out of the digest: an exam opening is time-sensitive and a grade is the
+  // whole point of checking. Route those to their own urgent message instead
+  // of letting them sit in the middle of a materials list.
+  const URGENT = new Set(["exam", "grade"]);
+  const urgent = fresh.filter((f) => URGENT.has(f.scope));
+  const normal = fresh.filter((f) => !URGENT.has(f.scope));
+  for (const { scope, item } of urgent) {
+    await markSeen(item);
+    queueNotify(`${scope === "exam" ? "🚨" : "🎯"} <b>${scope === "exam" ? "اختبار متاح الحين!" : "نتيجة جديدة!"}</b>\n${formatItem(scope, item).split("\n").slice(1).join("\n")}`);
+  }
   const lines = [];
-  for (const { scope, item } of fresh) {
+  for (const { scope, item } of normal) {
     lines.push(formatItem(scope, item));
     await markSeen(item); // mark before sending so a crash never re-notifies
   }
   // Queue the whole batch as one block; the flush merges it with anything
   // else this cycle produced.
-  queueNotify(lines.join("\n\n"));
+  if (lines.length) queueNotify(lines.join("\n\n"));
 }
 
 function chunkLines(lines, maxChars) {

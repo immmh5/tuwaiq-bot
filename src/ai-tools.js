@@ -259,6 +259,33 @@ export const TOOL_SPECS = [
   {
     type: "function",
     function: {
+      // The student says this in their own words; the tool keeps the raw
+      // sentence so the parse happens in exactly one place.
+      name: "set_reminder",
+      description: "اضبط تذكيرًا للطالب. استخدمها لما يطلب تذكيرًا بأي شي: اختبار، موعد، تسليم. نص التذكير يطلع للطالب كما هو وقت التذكير.",
+      parameters: {
+        type: "object",
+        properties: {
+          text: {
+            type: "string",
+            description: "جملة التذكير بالعربي كما قالها الطالب، مثل: بكرة الساعة 8 باختبار الفيزياء",
+          },
+        },
+        required: ["text"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "list_reminders",
+      description: "قائمة التذكيرات المفعّلة الحين. استخدمها لما يسأل عن تذكيراته.",
+      parameters: { type: "object", properties: {}, required: [] },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "set_mega_enabled",
       description: "شغّل أو أوقف رفع النسخ الاحتياطية لـ MEGA.",
       parameters: {
@@ -490,6 +517,18 @@ export async function runTool(name, args, accessToken, ctx = {}) {
     case "run_fresh_check": {
       const fn = await dispatchCommand("/fresh", chatId);
       return fn ? { ok: true, started: true } : { error: "fresh check unavailable" };
+    }
+    case "set_reminder": {
+      const { parseReminder, addReminder, fmtReminder } = await import("./reminders.js");
+      const r = parseReminder(String(a.text || "").trim());
+      if (!r) return { error: "ما فهمت وقت التذكير" };
+      await addReminder(chatId, r);
+      return { ok: true, at: fmtReminder(r), body: r.body };
+    }
+    case "list_reminders": {
+      const { listReminders, fmtReminder } = await import("./reminders.js");
+      const rows = await listReminders(chatId);
+      return { ok: true, count: rows.length, reminders: rows.map((r) => ({ body: r.body, at: fmtReminder(r) })) };
     }
     default:
       return { error: `unknown tool: ${name}` };
