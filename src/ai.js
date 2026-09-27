@@ -118,6 +118,26 @@ async function chatOnce(messages, cfg, { tools } = {}) {
 // Capped so a chatty model can't loop forever on the free tier.
 const MAX_ROUNDS = 6;
 
+// Ask once, retrying a rate-limited request rather than surfacing it. The
+// provider answers 429 with "Cluster RPM rate limit exceeded" when several
+// turns land inside the same minute — which the tool loop does naturally —
+// and the student would otherwise see a raw error for something that clears
+// itself a few seconds later.
+async function chatWithRetry(messages, cfg, opts) {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      return await chatOnce(messages, cfg, opts);
+    } catch (err) {
+      const retryable = /HTTP 429|rate limit|Cluster RPM|HTTP 5\d\d/.test(String(err.message));
+      if (!retryable || attempt === 2) throw err;
+      // Back off: 3s, then 8s. Long enough for the per-minute bucket to clear,
+      // short enough that the student is not staring at "أفكر…" forever.
+      const ms = attempt === 0 ? 3000 : 8000;
+      await new Promise((r) => setTimeout(r, ms));
+    }
+  }
+}
+
 export async function askAI(userQuestion, opts = {}) {
   // chatId travels to the tools so settings changes and command dispatches
   // land in the right conversation. Without it the action tools throw
@@ -181,7 +201,22 @@ async function askWithTools(userQuestion, cfg, accessToken, history = [], toolCt
   ];
 
   for (let round = 0; round < MAX_ROUNDS; round++) {
-    const data = await chatOnce(messages, cfg, { tools: TOOL_SPECS });
+    let data;
+    try {
+      data = await chatWithRetry(messages, cfg, { tools: TOOL_SPECS });
+    } catch (err) {
+      // The provider stayed rate-limited or down. If a tool already ran, the
+      // student's request was actioned even though the model never wrote its
+      // confirmation — report that instead of a raw HTTP error, which reads
+      // to them like nothing happened.
+      const done = lastToolResult;
+      if (done && done.preview) return { ok: true, reply: done.preview };
+      if (done && done.ok) return { ok: true, reply: "✅ تم، بس ما قدرت أكتبلك تفاصيل الحين. حاول مرة ثانية لو تبي التفاصيل." };
+      return {
+        ok: false,
+        reply: "⚠️ الخدمة مشغولة الحين، جرّب بعد دقيقة.\nإذا كان فيه شي مهم، استخدم /remind مباشرة.",
+      };
+    }
     const choice = data?.choices?.[0];
     if (!choice) return { ok: false, reply: "⚠️ ما رجع جواب. جرّب مرة ثانية." };
 
@@ -296,7 +331,7 @@ async function askWithSnapshot(userQuestion, cfg, accessToken) {
     { role: "user", content: userQuestion },
   ];
 
-  const data = await chatOnce(messages, cfg, {});
+  const data = await chatWithRetry(messages, cfg, {});
   const choice = data?.choices?.[0];
   const reply = (choice?.message?.content || "").trim();
   if (!reply) return { ok: false, reply: "⚠️ الجواب طلع فاضي. جرّب مرة ثانية." };
