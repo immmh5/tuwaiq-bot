@@ -199,7 +199,7 @@ export function parseReminder(text, now = new Date()) {
   // command word in the middle as often as the front.
   const FILLER = new Set([
     "خل", "خلي", "ضبط", "ضبطني", "التنبيه", "تنبيه", "التذكير", "تذكير",
-    "يوم", "الساعة", "ساعة", "وايضا", "وا", "بس", "ذكرني", "ذكرين", "مفروض",
+    "يوم", "الساعة", "ساعة", "وايضا", "وا", "بس", "ذكرني", "ذكرين", "مفروض",    "في", "فى", "فيه", "عن", "علي", "على", "مع", "من", "الي", "إلي",
   ]);
   // A sentence that is all command and no content — "خل التنبيه يوم ال4
   // الساعة 4 ظهر" — still names a real appointment, so fall back to the
@@ -270,6 +270,22 @@ export async function listReminders(chatId) {
 
 export async function addReminder(chatId, reminder) {
   const rows = await listReminders(chatId);
+  // A second reminder about the same thing is almost always a reschedule that
+  // arrived by the wrong path: the model was told to use update_reminder, but
+  // sometimes it composes its own sentence for set_reminder instead, and the
+  // student ends up nudged about one tasmee at two different times. Comparing
+  // the core — the body without filler words, alef and ta normalised — means
+  // "في تسميع للعناصر المهمة" and "يوم في تسميع للعناصر المهمه" are the same
+  // appointment, and the new time wins.
+  const core = bodyCore(reminder.body);
+  if (core && core.length >= 4) {
+    const dup = rows.find((r) => bodyCore(r.body) === core);
+    if (dup) {
+      Object.assign(dup, { date: reminder.date, time: reminder.time, priority: reminder.priority, sent: [] });
+      await setKv(KEY(chatId), rows);
+      return { ...dup, replaced: true };
+    }
+  }
   const rec = {
     id: `r${Date.now()}${rows.length}`,
     sent: [],
@@ -279,6 +295,25 @@ export async function addReminder(chatId, reminder) {
   rows.push(rec);
   await setKv(KEY(chatId), rows);
   return rec;
+}
+
+// What a reminder is actually about, stripped of the words that carry the
+// instruction and the spelling variants the platform and the student switch
+// between.
+function bodyCore(body) {
+  const FILLER = new Set([
+    "خل", "خلي", "ضبط", "ضبطني", "التنبيه", "تنبيه", "التذكير", "تذكير",
+    "يوم", "الساعة", "ساعة", "وايضا", "وا", "بس", "ذكرني", "ذكرين", "مفروض",    "في", "فى", "فيه", "عن", "علي", "على", "مع", "من", "الي", "إلي",
+  ]);
+  return String(body || "")
+    .replace(/[أإآ]/g, "ا")
+    .replace(/ى/g, "ي")
+    .replace(/ة/g, "ه")
+    .replace(/[ً-ْـ]/g, "")
+    .split(/\s+/)
+    .filter((w) => w && !FILLER.has(w))
+    .join(" ")
+    .trim();
 }
 
 export async function removeReminder(chatId, id) {
