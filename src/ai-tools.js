@@ -552,6 +552,11 @@ export async function runTool(name, args, accessToken, ctx = {}) {
         body: r.body,
         priority: r.priority,
         reason: r.reason || null,
+        // Spell out what will happen so the model has something concrete to
+        // report back: a bare ok:true let some providers answer with an
+        // empty string and the student saw "الجواب طلع فاضي".
+        nudges: r.priority === "high" ? 4 : r.priority === "medium" ? 2 : 1,
+        before: "21:00",
         // The wording the student will see, so the model can quote it back
         // accurately instead of inventing a time.
         preview: r.priority === "high"

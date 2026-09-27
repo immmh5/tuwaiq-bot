@@ -155,6 +155,9 @@ let pendingPhoto = null;
 
 async function askWithTools(userQuestion, cfg, accessToken, history = [], toolCtx = {}) {
   pendingPhoto = null;
+  // The last tool result, kept so an empty final answer can still be
+  // answered with what the tool actually did.
+  let lastToolResult = null;
   const messages = [
     { role: "system", content: SYSTEM_PROMPT },
     {
@@ -183,6 +186,13 @@ async function askWithTools(userQuestion, cfg, accessToken, history = [], toolCt
         // Some providers return an empty content on the first pass but have
         // already emitted tool results; keep the photo if we have one.
         if (pendingPhoto) return { ok: true, reply: "", photo: pendingPhoto };
+        // An action already ran and the model went quiet instead of
+        // confirming it. Report it ourselves rather than showing the
+        // student an empty failure — a reminder that was set but never
+        // acknowledged looks to them like it never happened.
+        const done = lastToolResult;
+        if (done && done.preview) return { ok: true, reply: done.preview };
+        if (done && done.ok) return { ok: true, reply: "✅ تم." };
         return { ok: false, reply: "⚠️ الجواب طلع فاضي. جرّب مرة ثانية." };
       }
       return { ok: true, reply, photo: pendingPhoto || null };
@@ -209,6 +219,7 @@ async function askWithTools(userQuestion, cfg, accessToken, history = [], toolCt
         pendingPhoto = { photo: result.__photo, caption: result.__caption || "" };
         result = { sent: true, kind: "photo", caption: result.__caption || "" };
       }
+      lastToolResult = result;
       messages.push({
         role: "tool",
         tool_call_id: tc.id,
