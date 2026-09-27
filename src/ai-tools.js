@@ -520,10 +520,46 @@ export async function runTool(name, args, accessToken, ctx = {}) {
     }
     case "set_reminder": {
       const { parseReminder, addReminder, fmtReminder } = await import("./reminders.js");
-      const r = parseReminder(String(a.text || "").trim());
+      const sentence = String(a.text || "").trim();
+      const r = parseReminder(sentence);
       if (!r) return { error: "ما فهمت وقت التذكير" };
+      // When the student names an exam but no clock, nudge in the afternoon
+      // — right after school, before the evening — instead of 8am, which a
+      // student sleeps through. The parse already chose 13:00 for high; here
+      // we confirm against the real timetable so the nudge never lands in
+      // the middle of a class.
+      if (r.priority === "high" && !/\d/.test(sentence.replace(/[٠-٩]/g, ""))) {
+        try {
+          const sessions = await fetchScope("schedule", accessToken);
+          const day = (sessions || []).filter((s) => String(s.date || "").slice(0, 10) === r.date);
+          if (day.length) {
+            const last = day.reduce((m, s) => {
+              const e = String(s.endTime || "00:00").slice(0, 5);
+              return e > m ? e : m;
+            }, "00:00");
+            const [h, mn] = last.split(":").map(Number);
+            const after = `${String(Math.min(21, h + 1)).padStart(2, "0")}:${String(mn || 0).padStart(2, "0")}`;
+            r.time = after;
+          }
+        } catch {
+          // schedule unreadable — keep the parsed afternoon default
+        }
+      }
       await addReminder(chatId, r);
-      return { ok: true, at: fmtReminder(r), body: r.body };
+      return {
+        ok: true,
+        at: fmtReminder(r),
+        body: r.body,
+        priority: r.priority,
+        reason: r.reason || null,
+        // The wording the student will see, so the model can quote it back
+        // accurately instead of inventing a time.
+        preview: r.priority === "high"
+          ? `🚨 تنبيه مهم — ${r.body} — ${fmtReminder(r)} (يتكرر قبل ٩ مساء)`
+          : r.priority === "medium"
+          ? `⏰ ${r.body} — ${fmtReminder(r)} (تنبيهين)`
+          : `⏰ ${r.body} — ${fmtReminder(r)}`,
+      };
     }
     case "list_reminders": {
       const { listReminders, fmtReminder } = await import("./reminders.js");

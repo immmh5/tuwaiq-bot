@@ -304,7 +304,20 @@ async function maybeReminders(now, send) {
   const due = await collectDueReminders(chatId, now);
   if (!due.length) return 0;
   for (const r of due) {
-    await send(`⏰ <b>تذكير</b>\n${esc(r.body)}`);
+    // The wording climbs with each nudge so the student can tell a first
+    // tap from a last-chance one, and the exam-level ones say the count
+    // out loud: "هذا التنبيه الثالث والأخير".
+    const n = r.nudge || 1;
+    const total = r.priority === "high" ? 4 : r.priority === "medium" ? 2 : 1;
+    const lead =
+      r.priority === "high" && n >= total ? "🚨 <b>تنبيه أخير — هذا مهم</b>"
+      : r.priority === "high" && n > 1 ? `🚨 <b>تنبيه ${n} من ${total}</b>`
+      : r.priority === "high" ? "🚨 <b>تنبيه مهم</b>"
+      : "⏰ <b>تذكير</b>";
+    const note = r.final && n === 1 && r.priority !== "low"
+      ? "\n<i>(وصلني متأخر، الفحص كان نايم — هذا التنبيه الوحيد)</i>"
+      : "";
+    await send(`${lead}\n${esc(r.body)}${note}`);
   }
   return due.length;
 }

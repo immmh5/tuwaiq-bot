@@ -440,6 +440,8 @@ export async function notifyOwner(text) {
 // --- scheduler ----------------------------------------------------------------
 
 let timer = null;
+// The minute-resolution tick for reminders. Runs only while reminders exist.
+let fastTimer = null;
 // The cadence can be changed at runtime from the settings panel, so the
 // effective interval is resolved here rather than read once at boot.
 export async function getCheckIntervalMinutes() {
@@ -481,7 +483,31 @@ export async function startWatcher() {
   // Fire immediately on boot, then on the interval
   setTimeout(run, 5000);
   timer = setInterval(run, intervalMin * 60 * 1000);
-  console.log(`watcher started (every ${intervalMin} min)`);
+  // Reminders want minute resolution: a nudge set for 13:00 should not wait
+  // for the next ten-minute scan. A separate fast tick runs the scheduler
+  // alone every minute; the scan above keeps its own cadence so the platform
+  // is not hammered 60x more often for the sake of the clock.
+  let anyReminders = false;
+  const fast = async () => {
+    try {
+      const { listReminders } = await import("./reminders.js");
+      const chatId = process.env.TELEGRAM_CHAT_ID || null;
+      if (!chatId) return;
+      anyReminders = (await listReminders(chatId)).length > 0;
+    } catch {
+      return; // reminders unreadable this tick; try again next minute
+    }
+    if (!anyReminders) return;
+    try {
+      const { runScheduler } = await import("./scheduler.js");
+      await runScheduler({ send: (text) => queueNotify(text) });
+    } catch (err) {
+      console.error("reminder tick error:", err.message);
+    }
+  };
+  fastTimer = setInterval(fast, 60000);
+  setTimeout(fast, 20000);
+  console.log(`watcher started (every ${intervalMin} min, reminders every 1 min)`);
 }
 
 // Restart the scheduler so a settings change to the interval takes effect
@@ -493,6 +519,8 @@ export async function restartWatcher() {
 
 export function stopWatcher() {
   if (timer) clearInterval(timer);
+  if (fastTimer) clearInterval(fastTimer);
   timer = null;
+  fastTimer = null;
   running = false;
 }

@@ -442,6 +442,15 @@ function registerCommands() {
     );
   });
 
+  // "✅ تم" on a reminder: the student has handled it, so stop the whole
+  // escalation chain at once. This is the off-switch the exam-level repeats
+  // need, otherwise they would keep firing until 21:00 no matter what.
+  onCallback("ack_reminder", async ({ chatId, queryId, arg }) => {
+    const { ackReminder } = await import("./reminders.js");
+    const n = await ackReminder(chatId, String(arg || ""));
+    await answerCallbackQuery(queryId, n ? "✅ خلاص، ما أذكرك بعد" : "ما عندي هذا التذكير");
+  });
+
   // Deleting one reminder from the list. The id is ours, so a bad id just
   // means the row already went — no error worth surfacing.
   onCallback("del_reminder", async ({ chatId, queryId, arg }) => {
@@ -836,10 +845,19 @@ function registerCommands() {
       );
       return;
     }
-    await addReminder(chatId, r);
+    const rec = await addReminder(chatId, r);
+    // Say how insistent this one will be, so the student knows what they
+    // signed up for: an exam repeats before 21:00, a homework nudge twice,
+    // everything else once.
+    const how =
+      r.priority === "high"
+        ? "🚨 هذا مهم — بينبهك أكثر من مرة قبل ٩ مساء"
+        : r.priority === "medium"
+        ? "⏰ بينبهك مرتين"
+        : "⏰ تذكير وحدة";
     await sendMessage(
       chatId,
-      `⏰ <b>تم التذكير</b>\n${escapeHtml(r.body)}\n📅 ${escapeHtml(fmtReminder(r))}\n\nشوفها كلها: <code>/reminders</code>`,
+      `⏰ <b>تم التذكير</b>\n${escapeHtml(r.body)}\n📅 ${escapeHtml(fmtReminder(r))}\n${escapeHtml(how)}\n\nشوفها كلها: <code>/reminders</code>`,
     );
   });
 
@@ -855,8 +873,11 @@ function registerCommands() {
     }
     await sendButtons(
       chatId,
-      "<b>⏰ تذكيراتك</b>\n\n" + rows.map((r) => `• ${escapeHtml(r.body)} — <i>${escapeHtml(fmtReminder(r))}</i>`).join("\n"),
-      rows.map((r) => [{ label: `🗑 ${String(r.body).slice(0, 20)}`, action: `del_reminder:${r.id}` }]),
+      "<b>⏰ تذكيراتك</b>\n\n" + rows.map((r) => `• ${escapeHtml(r.body)} — <i>${escapeHtml(fmtReminder(r))}</i>${r.priority === "high" ? " 🚨" : r.priority === "medium" ? " ⏰" : ""}`).join("\n"),
+      rows.map((r) => [
+        { label: `🗑 ${String(r.body).slice(0, 18)}`, action: `del_reminder:${r.id}` },
+        { label: `✅ تم`, action: `ack_reminder:${r.id}` },
+      ]),
     );
   });
 
